@@ -26,12 +26,17 @@ def main() -> None:
     with patch.object(sr, "virtual_outputs", return_value=outputs), \
          patch.object(sr, "all_inputs", return_value=inputs):
         assert sr.guess_virtual_output() is None
+        assert "还缺少录音设备" in sr.virtual_route_status()[1]
         assert sr.voice_input_for(external.description()) is None
         inputs.append(mic)
         assert sr.guess_virtual_output() is render
         assert sr.voice_input_for(render.description()) is mic
+        outputs.remove(render)
+        assert "还缺少播放端" in sr.virtual_route_status()[1]
+        outputs.append(render)
         inputs.append(device("Jinkra Virtual Mic"))
         assert sr.guess_virtual_output() is None
+        assert "多个 Jinkra 端点" in sr.virtual_route_status()[1]
     assert sr.is_virtual_name(mic.description())
     physical = device("USB Mic")
     with patch.object(sr, "find_input", return_value=physical):

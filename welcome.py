@@ -5,13 +5,13 @@ import time
 from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout,
+    QCheckBox, QDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout,
     QLabel, QLineEdit, QListView, QProgressBar, QPushButton, QSizeGrip, QSplashScreen, QStackedWidget,
     QVBoxLayout, QWidget,
 )
 
 import driver_setup
-from ui_chrome import motion_allowed
+from ui_chrome import Dropdown, motion_allowed
 
 
 def reveal(widget, enabled=True):
@@ -135,36 +135,6 @@ class _ScanPanel(QWidget):
             painter.drawEllipse(center, radius, radius)
 
 
-class _MicPicker(QComboBox):
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        arrow_center = QPointF(self.width() - 19, self.height() / 2)
-        arrow = QPainterPath(arrow_center + QPointF(-4, -2))
-        arrow.lineTo(arrow_center + QPointF(0, 2))
-        arrow.lineTo(arrow_center + QPointF(4, -2))
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        color = "#315e59" if self.isEnabled() else "#82948d"
-        pen = QPen(QColor(color), 1.5)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        painter.setPen(pen)
-        painter.drawPath(arrow)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
-            self.showPopup()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-
 class SetupGuide(QDialog):
     def __init__(self, service, activation, cfg, parent=None):
         super().__init__(parent)
@@ -230,12 +200,8 @@ QPushButton#Activate:hover { background: #115a55; }
 QPushButton#Activate:pressed { background: #0b4744; }
 QPushButton#Activate:focus { border-color: #80c6ba; }
 QPushButton#Activate:disabled { color: #4b686d; background: #e4edef; border-color: #d7e4e7; }
-QComboBox#GuideMic { combobox-popup: 0; padding-right: 38px; }
 QComboBox#GuideMic:hover { background: #f3f9f6; border-color: #7ca595; }
 QComboBox#GuideMic:disabled { color: #576b60; background: #e9ede6; }
-QComboBox#GuideMic::drop-down { subcontrol-origin: border; subcontrol-position: top right;
-    width: 38px; border: none; background: transparent; }
-QComboBox#GuideMic::down-arrow { image: none; width: 0; height: 0; }
 QListView#GuideMicOptions { color: #223b30; background: #ffffff; outline: 0;
     border: 1px solid #bacfc3; border-radius: 7px; padding: 3px;
     selection-color: #133d2b; selection-background-color: #dceee3; }
@@ -297,7 +263,7 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
             "\n启动后，快捷键与轮盘外观都可以继续调整。", note=True))
 
         mic = self._page("设置语音输出", "将你的麦克风与音效混合，供游戏或聊天软件录制。也可以先只使用本地播放。")
-        self.mic_picker = _MicPicker()
+        self.mic_picker = Dropdown()
         self.mic_picker.setObjectName("GuideMic")
         self.mic_picker.setAccessibleName("实体麦克风")
         self.mic_picker.activated.connect(self._remember_mic)
@@ -317,8 +283,10 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
         self.driver_status = self._text("", note=True)
         mic.insertWidget(6, self.driver_status)
         actions = QHBoxLayout()
-        self.btn_install = QPushButton("安装随附驱动")
+        self.btn_install = QPushButton("安装虚拟麦克风")
         self.btn_install.clicked.connect(self._install)
+        self.driver_installation = driver_setup.for_application(service.BASE_DIR, service.RESOURCE_DIR)
+        self.driver_installation.changed.connect(self._refresh_driver_status)
         self.btn_refresh = QPushButton("重新检测")
         self.btn_refresh.clicked.connect(self._refresh_audio)
         actions.addWidget(self.btn_install)
@@ -519,22 +487,22 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
                     picker.addItem("未检测到实体麦克风")
             picker.setEnabled(bool(choices))
             self.mic_status.setVisible(not choices)
-        ready = service.guess_virtual_output() is not None
-        present = driver_setup.installer(service.BASE_DIR, service.RESOURCE_DIR)
+        self._refresh_driver_status()
+
+    def _refresh_driver_status(self):
+        output, missing = self.service.virtual_route_status()
+        ready = output is not None
         self.enable_mic.setEnabled(ready)
-        self.btn_install.setVisible(not ready and present is not None)
+        self.btn_install.setEnabled(not ready and self.driver_installation.process is None)
+        self.btn_install.setText("虚拟麦克风已就绪" if ready else "安装虚拟麦克风")
         self.driver_status.setText("已识别 Jinkra Virtual Mic。请在游戏里选择这个录音设备。"
-                                   if ready else "已找到随附驱动。安装后可重新检测录音设备。"
-                                   if present else "当前包没有随附已签名的虚拟麦克风驱动，可先使用本地播放。")
+                                   if ready else f"{missing}\n{self.driver_installation.hint()}")
 
     def _remember_mic(self, index):
         self.preferred_mic = str(self.mic_picker.itemData(index) or "")
 
     def _install(self):
-        try:
-            driver_setup.start_install(self.service.BASE_DIR, self.service.RESOURCE_DIR)
-        except OSError as error:
-            self.driver_status.setText(str(error))
+        self.driver_installation.install(self)
 
     def _retry_status(self):
         left = int(self.locked_until - time.monotonic() + 0.99)

@@ -52,7 +52,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -68,8 +67,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSlider,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -80,7 +77,10 @@ from PySide6.QtWidgets import (
 import sr_roulette as sr
 import driver_setup
 from audio_routes import MIC_ENDPOINT
-from ui_chrome import branded_menu, motion_allowed
+from ui_chrome import Dropdown, branded_menu, motion_allowed
+from ui_chrome import DoubleSpinBox as QDoubleSpinBox
+from ui_chrome import Slider as QSlider
+from ui_chrome import SpinBox as QSpinBox
 from welcome import reveal
 from sounds_config import (
     CM_ACC,
@@ -452,7 +452,6 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border: 1px solid {ACCENT_HEX};
 }}
-QComboBox::drop-down {{ border: none; width: 20px; }}
 QComboBox QAbstractItemView {{
     background: #ffffff;
     border: 1px solid #d6d9cf;
@@ -1265,6 +1264,7 @@ class LibraryPage(QWidget):
         self.setObjectName("Library")
         self.setAttribute(Qt.WA_StyledBackground)
         root = QVBoxLayout(self)
+        self.content_layout = root
         root.setContentsMargins(15, 14, 15, 15)
         root.setSpacing(10)
 
@@ -1287,7 +1287,7 @@ class LibraryPage(QWidget):
 
         fbar = QHBoxLayout()
         fbar.setSpacing(8)
-        self.folder_filter = QComboBox()
+        self.folder_filter = Dropdown()
         self.folder_filter.setMinimumWidth(132)
         self.folder_filter.setToolTip("只看某个文件夹里的音效（和右边的搜索同时生效）")
         self.folder_filter.currentIndexChanged.connect(lambda _i: self.refresh())
@@ -1308,11 +1308,12 @@ class LibraryPage(QWidget):
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
+        self.scroll.setMinimumHeight(24)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         holder = QWidget()
         self.grid = QGridLayout(holder)
         self.grid.setContentsMargins(0, 0, 4, 0)
-        self.grid.setSpacing(6)
+        self.grid.setSpacing(4)
         self.grid.setAlignment(Qt.AlignTop)
         self.grid.setColumnStretch(0, 1)
         self.scroll.setWidget(holder)
@@ -1352,6 +1353,11 @@ class LibraryPage(QWidget):
         root.addWidget(self.combo_list)
 
         self.refresh()
+
+    def set_compact_height(self, compact: bool) -> None:
+        self.content_layout.setContentsMargins(15, 8 if compact else 14, 15, 8 if compact else 15)
+        self.content_layout.setSpacing(5 if compact else 10)
+        self.combo_list.setFixedHeight(48 if compact else 86)
 
     def refresh(self) -> None:
         self.refresh_combos()      # 先刷组合区：下面早退也不会漏
@@ -1618,7 +1624,7 @@ class _SoundCell(QFrame):
     def __init__(self, path: Path, on_wheel: bool = False) -> None:
         super().__init__()
         self.setObjectName("Cell")
-        self.setFixedHeight(51)
+        self.setFixedHeight(33)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.setMinimumWidth(0)
         self.setCursor(Qt.OpenHandCursor)
@@ -1628,25 +1634,22 @@ class _SoundCell(QFrame):
         self.setProperty("assigned", on_wheel)
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(9, 6, 10, 6)
-        lay.setSpacing(10)
+        lay.setContentsMargins(8, 4, 9, 4)
+        lay.setSpacing(7)
 
         glyph = QLabel()
         glyph.setObjectName("TrackGlyph")
-        glyph.setFixedSize(32, 32)
+        glyph.setFixedSize(23, 23)
         glyph.setAlignment(Qt.AlignCenter)
-        glyph.setPixmap(_navigation_icon("library", on_dark=False).pixmap(17, 17))
+        glyph.setPixmap(_navigation_icon("library", on_dark=False).pixmap(13, 13))
         lay.addWidget(glyph)
 
-        col = QVBoxLayout()
-        col.setSpacing(1)
         name = _ElideLabel(path.stem)
         name.setObjectName("TrackName")
-        col.addWidget(name)
-        meta = _ElideLabel(f"{path.suffix.upper().lstrip('.')} · {_duration_text(path)}")
+        lay.addWidget(name, 1)
+        meta = QLabel(f"{path.suffix.upper().lstrip('.')} · {_duration_text(path)}")
         meta.setObjectName("Hint")
-        col.addWidget(meta)
-        lay.addLayout(col, 1)
+        lay.addWidget(meta)
         if on_wheel:
             state = QLabel("已上盘")
             state.setObjectName("TrackState")
@@ -1956,7 +1959,7 @@ class ComboEditorDialog(QDialog):
         self.ed_name.setMinimumWidth(160)
         top.addWidget(self.ed_name, 2)
         top.addWidget(QLabel("播放方式"))
-        self.cmb_mode = QComboBox()
+        self.cmb_mode = Dropdown()
         for m in COMBO_MODES:
             self.cmb_mode.addItem(COMBO_MODE_LABEL.get(m, m), m)
         self.cmb_mode.setCurrentIndex(max(0, self.cmb_mode.findData(cdef.mode)))
@@ -2325,7 +2328,7 @@ class ComboEditorDialog(QDialog):
 
                 self.table.setCellWidget(row, 1, self._make_sound_box(row, it, names))
 
-                trig = QComboBox()
+                trig = Dropdown()
                 for t in TRIGS:
                     trig.addItem(TRIG_LABEL.get(t, t), t)
                 # 第一项的触发点必须是"组合开始时"，否则它没有上一项可参照
@@ -2391,7 +2394,7 @@ class ComboEditorDialog(QDialog):
 
     def _make_sound_box(self, row: int, it, names: list[str]) -> QComboBox:
         """音效列做成下拉框：文件被删/改名后一眼能看见，也顺手能换掉。"""
-        box = QComboBox()
+        box = Dropdown()
         if not it.sound:
             box.addItem("（未选音效）", "")
         elif it.sound not in names:
@@ -3004,7 +3007,7 @@ class HotkeyPage(QWidget):
         self.hold.setFixedWidth(110)
         l1.addWidget(_row("长按时长", self.hold, "低于此值不弹出"))
 
-        self.tap = QComboBox()
+        self.tap = Dropdown()
         for label, value in (
             ("播放选中 / 上次那个", "auto"),
             ("什么都不做", "none"),
@@ -3813,7 +3816,7 @@ class MicPage(QWidget):
 
         self.columns = root
         card, lay = _card("录音线路")
-        self.cmb_mic = QComboBox()
+        self.cmb_mic = Dropdown()
         self.cmb_mic.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.cmb_mic.setMinimumContentsLength(14)
         lay.addWidget(_row("实体麦克风", self.cmb_mic))
@@ -3835,8 +3838,10 @@ class MicPage(QWidget):
         self.btn_refresh = QPushButton("重新检测")
         self.btn_refresh.clicked.connect(self._redetect)
         row.addWidget(self.btn_refresh)
-        self.btn_install = QPushButton("安装随附驱动")
+        self.btn_install = QPushButton("安装虚拟麦克风")
         self.btn_install.clicked.connect(self._install_driver)
+        self.driver_installation = driver_setup.for_application(sr.BASE_DIR, sr.RESOURCE_DIR)
+        self.driver_installation.changed.connect(self._refresh_status)
         row.addWidget(self.btn_install)
         self.btn_copy = QPushButton("复制设备名")
         self.btn_copy.clicked.connect(self._copy_name)
@@ -3934,10 +3939,7 @@ class MicPage(QWidget):
         self._refresh_status()
 
     def _install_driver(self) -> None:
-        try:
-            driver_setup.start_install(sr.BASE_DIR, sr.RESOURCE_DIR)
-        except OSError as error:
-            self.lbl_status.setText(str(error))
+        self.driver_installation.install(self)
 
     def _redetect(self) -> None:
         if self.engine is not None:
@@ -3961,15 +3963,14 @@ class MicPage(QWidget):
     def _refresh_status(self) -> None:
         enabled = self.chk_enable.isChecked()
         status = self.engine.audio_status() if self.engine is not None else {}
-        output = sr.guess_virtual_output()
+        output, missing = sr.virtual_route_status()
         ready = output is not None
         self.chk_enable.setEnabled(ready or enabled)
         self.btn_copy.setEnabled(ready)
-        package = driver_setup.installer(sr.BASE_DIR, sr.RESOURCE_DIR)
-        self.btn_install.setVisible(not ready and package is not None)
+        self.btn_install.setEnabled(not ready and self.driver_installation.process is None)
+        self.btn_install.setText("虚拟麦克风已就绪" if ready else "安装虚拟麦克风")
         if not ready:
-            lines = ["已找到随附驱动。安装后点击重新检测。"
-                     if package else "Windows 尚未识别 Jinkra Virtual Mic。当前安装包没有随附已签名驱动。"]
+            lines = [missing, self.driver_installation.hint()]
         elif status.get("cable_active") and status.get("cable") == output.description():
             lines = ["混音已送出。在游戏或语音软件中选择 Jinkra Virtual Mic。"]
         elif enabled:
@@ -4143,7 +4144,6 @@ class HelpPage(QWidget):
         tl.setContentsMargins(14, 12, 14, 12)
         tl.setSpacing(8)
         tip = _WrapLabel(
-            "Jinkra 由 SR Voiceover Roulette 改造，原作者为迟昼（B 站账号 缪缪缪尔赛思）。\n"
             "该软件仅供娱乐，安全性请使用者自行判断。"
         )
         tip.setObjectName("DocText")
@@ -4464,8 +4464,8 @@ class HelpPage(QWidget):
             (
                 "Q1 长按 Y 没反应、轮盘不出来？",
                 "按这个顺序查：\n"
-                "① 设置窗口是不是就在最前面？它是当前窗口时热键不响应（免得在里面打字把轮盘弹出来）。"
-                "点一下游戏窗口让它回到前台就好 —— 设置窗口留在后台开着没关系。\n"
+                "① 如果焦点在搜索或快捷键录入框，先点击顶部页签或关闭弹出的菜单，再长按呼出键。"
+                "也可以切回游戏再长按。\n"
                 "② 当前这套轮盘是不是空的？一个音效都没上盘时按了不会有反应，"
                 "日志里会写「当前这套轮盘是空的」。\n"
                 "③ Y 是不是被游戏占用了？换个 F9 之类不常用的键试试。\n"
@@ -4980,8 +4980,8 @@ class SlotDetail(QFrame):
         self.current: str | None = None
         self._is_combo = False
         self._loading = False
+        self._compact = False
         self.setObjectName("Card")
-        self.setMinimumHeight(285)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 6, 16, 6)
@@ -5026,12 +5026,12 @@ class SlotDetail(QFrame):
         pl.setFixedWidth(52)
         pl.setStyleSheet("color:#3f6074;font-size:12px;")
         pitch_row.addWidget(pl)
-        self.pitch_mode = QComboBox()
+        self.pitch_mode = Dropdown()
         for mode in PITCH_MODES:
             self.pitch_mode.addItem(PITCH_MODE_LABEL.get(mode, mode), mode)
         pitch_row.addWidget(self.pitch_mode, 1)
         # 幅度：升/降调时是"每次变多少"，随机时是"随机范围 ±N"
-        self.pitch_step = QComboBox()
+        self.pitch_step = Dropdown()
         for n in (1, 2, 3, 5, 7, 12):
             self.pitch_step.addItem(f"±{n} 半音", float(n))
         self.pitch_step.setToolTip(
@@ -5058,7 +5058,7 @@ class SlotDetail(QFrame):
         sl.setFixedWidth(52)
         sl.setStyleSheet("color:#3f6074;font-size:12px;")
         spd_row.addWidget(sl)
-        self.speed_mode = QComboBox()
+        self.speed_mode = Dropdown()
         for mode in SPEED_MODES:
             self.speed_mode.addItem(SPEED_MODE_LABEL.get(mode, mode), mode)
         self.speed_mode.setToolTip(
@@ -5067,13 +5067,20 @@ class SlotDetail(QFrame):
             "两个可以同时开，比如又升调又加快。"
         )
         spd_row.addWidget(self.speed_mode, 1)
-        self.speed_step = QComboBox()
+        self.speed_step = Dropdown()
         for pct in (5, 8, 10, 15, 20, 30):
             self.speed_step.addItem(f"每次 {pct}%", pct / 100.0)
         self.speed_step.setToolTip("每连击一次快/慢多少（上限 ±60%）")
         spd_row.addWidget(self.speed_step)
         body.addLayout(spd_row)
+        for choice, length in ((self.pitch_mode, 5), (self.speed_mode, 5),
+                               (self.pitch_step, 4), (self.speed_step, 4)):
+            choice.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            choice.setMinimumContentsLength(length)
+        for mode in (self.pitch_mode, self.speed_mode):
+            mode.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
 
+        self.timing_rows = QBoxLayout(QBoxLayout.LeftToRight)
         win_row = QHBoxLayout()
         self.lbl_window = QLabel("连击窗口")
         self.lbl_window.setFixedWidth(52)
@@ -5101,12 +5108,15 @@ class SlotDetail(QFrame):
         self.lbl_fixed_hint.hide()
         win_row.addWidget(self.lbl_fixed_hint)
         win_row.addStretch(1)
+        self.timing_rows.addLayout(win_row)
+
+        shortcut_row = QHBoxLayout()
         hl = QLabel("快捷键")
         hl.setFixedWidth(52)
         hl.setStyleSheet("color:#3f6074;font-size:12px;")
-        win_row.addWidget(hl)
+        shortcut_row.addWidget(hl)
         self.hotkey = KeyBox("", 116, allow_gamepad=True)
-        win_row.addWidget(self.hotkey)
+        shortcut_row.addWidget(self.hotkey)
         # 全局通用：勾上之后这个键不再跟着轮盘走。组合音效也有这一项 ——
         # 组合的定义全盘共用，但"这个键在别的盘上还算不算数"仍然要单独决定。
         # 文字用两字"全局"：这一行元素已经排满（连击窗口 + 快捷键 + 清除键），
@@ -5119,8 +5129,10 @@ class SlotDetail(QFrame):
             "不勾的时候只在它所在的这一套轮盘上生效（和以前一样）。\n"
             "没绑快捷键时这一项不起作用。"
         )
-        win_row.addWidget(self.chk_global)
-        body.addLayout(win_row)
+        shortcut_row.addWidget(self.chk_global)
+        shortcut_row.addStretch(1)
+        self.timing_rows.addLayout(shortcut_row)
+        body.addLayout(self.timing_rows)
 
         # 组合条目专用说明：变调/变速在组合编辑器里逐项设
         self.lbl_combo_hint = QLabel(
@@ -5138,7 +5150,7 @@ class SlotDetail(QFrame):
         tl.setFixedWidth(52)
         tl.setStyleSheet("color:#3f6074;font-size:12px;")
         trig_row.addWidget(tl)
-        self.trigger_mode = QComboBox()
+        self.trigger_mode = Dropdown()
         for mode in TRIGGER_MODES:
             self.trigger_mode.addItem(TRIGGER_MODE_LABEL.get(mode, mode), mode)
         self.trigger_mode.setToolTip(
@@ -5164,10 +5176,8 @@ class SlotDetail(QFrame):
         self.lbl_repeat_hint = QLabel("按住时每隔这么久再响一次")
         self.lbl_repeat_hint.setObjectName("Hint")
         self.lbl_repeat_hint.setWordWrap(True)
-        self.lbl_repeat_hint.setMaximumWidth(116)
-        trig_row.addWidget(self.lbl_repeat_hint)
-        trig_row.addStretch(1)
         body.addLayout(trig_row)
+        body.addWidget(self.lbl_repeat_hint)
 
         # ---- 触发条件（v0.9）：无条件 / 先用解锁键开门 ----
         cond_row = QHBoxLayout()
@@ -5176,7 +5186,7 @@ class SlotDetail(QFrame):
         cl.setFixedWidth(52)
         cl.setStyleSheet("color:#3f6074;font-size:12px;")
         cond_row.addWidget(cl)
-        self.unlock_mode = QComboBox()
+        self.unlock_mode = Dropdown()
         for mode in UNLOCK_MODES:
             self.unlock_mode.addItem(UNLOCK_MODE_LABEL.get(mode, mode), mode)
         self.unlock_mode.setToolTip(
@@ -5239,7 +5249,7 @@ class SlotDetail(QFrame):
         # 停止键可以有好几个：都摆在同一个容器里，按哪个都算。
         # 用容器而不是直接往行里塞，是为了加/删时不用动整行的布局。
         self.stop_holder = QWidget()
-        self._stop_lay = QHBoxLayout(self.stop_holder)
+        self._stop_lay = QGridLayout(self.stop_holder)
         self._stop_lay.setContentsMargins(0, 0, 0, 0)
         self._stop_lay.setSpacing(4)
         self._stop_boxes: list[KeyBox] = []
@@ -5315,6 +5325,14 @@ class SlotDetail(QFrame):
         self.btn_combo.clicked.connect(self._emit_edit_combo)
 
         self.set_sound(None)
+
+    def set_compact_width(self, compact: bool) -> None:
+        if compact == self._compact:
+            return
+        self._compact = compact
+        self.timing_rows.setDirection(QBoxLayout.TopToBottom if compact else QBoxLayout.LeftToRight)
+        self._layout_stop_keys()
+        self._sync_stop_ui()
 
     def set_sound(self, name: str | None) -> None:
         """切换当前编辑的音效；None 表示没选中，控件置灰。
@@ -5452,10 +5470,16 @@ class SlotDetail(QFrame):
                 "可以设好几个，按哪个都算；空着 = 没有这个键。"
             )
             b.key_changed.connect(lambda _v: self._push())
-            self._stop_lay.addWidget(b)
             self._stop_boxes.append(b)
         for i, b in enumerate(self._stop_boxes):
             b.set_key(vals[i] if i < len(vals) else "")
+        self._layout_stop_keys()
+
+    def _layout_stop_keys(self) -> None:
+        per_row = 2 if self._compact else STOP_KEYS_MAX
+        for i, box in enumerate(self._stop_boxes):
+            self._stop_lay.removeWidget(box)
+            self._stop_lay.addWidget(box, i // per_row, i % per_row)
 
     def _on_add_stop(self) -> None:
         """加号：多摆一个空框。已经是最后一个了就不再动。"""
@@ -5475,7 +5499,7 @@ class SlotDetail(QFrame):
         n = len(self._stop_boxes)
         self.btn_add_stop.setVisible(n < STOP_KEYS_MAX)
         self.btn_add_stop.setEnabled(self.current is not None)
-        self.lbl_stop_hint.setVisible(n < 3)
+        self.lbl_stop_hint.setVisible(n < 3 and not self._compact)
 
     def _on_trigger_changed(self) -> None:
         self._sync_trigger_ui()
@@ -5759,6 +5783,8 @@ class SettingsWindow(QWidget):
         self.work_scroll = QScrollArea()
         self.work_scroll.setWidgetResizable(True)
         self.work_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.work_viewport = self.work_scroll.viewport()
+        self.work_viewport.installEventFilter(self)
         self.content_host = QWidget()
         self.content_layout = QHBoxLayout(self.content_host)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
@@ -5815,19 +5841,25 @@ class SettingsWindow(QWidget):
         bar_layout.addWidget(version)
         self.content_layout.addWidget(self.tabs, 1)
 
+        self.deck_column = QWidget()
+        rl = QVBoxLayout(self.deck_column)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(12)
+        self.content_layout.addWidget(self.deck_column)
+
         self.deck = QScrollArea()
         self.deck.setWidgetResizable(True)
+        self.deck.setMinimumHeight(54)
         self.deck.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        right = QWidget()
-        rl = QVBoxLayout(right)
-        rl.setContentsMargins(0, 0, 4, 0)
-        rl.setSpacing(14)
-        self.deck.setWidget(right)
-        self.content_layout.addWidget(self.deck)
+        detail_holder = QWidget()
+        detail_layout = QVBoxLayout(detail_holder)
+        detail_layout.setContentsMargins(0, 0, 4, 0)
+        self.deck.setWidget(detail_holder)
 
         self.wheel_holder = QFrame()
         self.wheel_holder.setObjectName("WheelStage")
-        wh = QVBoxLayout(self.wheel_holder)
+        self.wheel_holder.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        wh = self.stage_layout = QVBoxLayout(self.wheel_holder)
         wh.setContentsMargins(17, 15, 17, 14)
         wh.setSpacing(8)
 
@@ -5846,6 +5878,7 @@ class SettingsWindow(QWidget):
         # 之前固定写死 172，导致直径调到 215 了预览还是老尺寸，看着偏小
         self.preview_cfg["wheel_radius"] = preview_radius_of(cfg)
         self.preview = WheelPreview(self.preview_cfg, bank)
+        self.preview.setToolTip("拖入音效，或点击扇区编辑")
         self.preview.bank = bank
         self.preview.selected = 0 if len(bank) else None
         self.preview.accent_rgb = (scfg.wheel_color() or None) if scfg is not None else None
@@ -5876,8 +5909,10 @@ class SettingsWindow(QWidget):
         self.detail.edit_combo_requested.connect(self._open_combo_editor)
         sel = self.preview.selected
         self.detail.set_sound(bank.full_at(sel) if sel is not None else None)
-        rl.addWidget(self.detail)
-        rl.addStretch(1)
+        detail_layout.addWidget(self.detail)
+        detail_layout.addStretch(1)
+        rl.addWidget(self.deck, 1)
+        rl.addStretch(0)
 
         if engine is not None:
             strip = QFrame()
@@ -5949,7 +5984,8 @@ class SettingsWindow(QWidget):
         button.setChecked(True)
         self.page_title.setText(button.text())
         self.work_scroll.verticalScrollBar().setValue(0)
-        self.deck.setVisible(index in (0, 2))
+        self.deck_column.setVisible(index in (0, 2))
+        self.deck.setVisible(index == 0)
         self.detail.setVisible(index == 0)
         self.stage_hint.setVisible(index == 0)
         self.deck.verticalScrollBar().setValue(0)
@@ -6029,6 +6065,11 @@ class SettingsWindow(QWidget):
         self._fit_deck()
         self._queue_geom_save()
 
+    def eventFilter(self, watched, event):
+        if watched is getattr(self, "work_viewport", None) and event.type() == QEvent.Resize:
+            self._fit_deck()
+        return super().eventFilter(watched, event)
+
     def moveEvent(self, e) -> None:  # noqa: N802
         super().moveEvent(e)
         self._queue_geom_save()
@@ -6041,25 +6082,30 @@ class SettingsWindow(QWidget):
         if not hasattr(self, "preview"):
             return
         page = self.tabs.currentIndex()
-        has_deck = page in (0, 2)
-        compact = has_deck and (self.width() < 930 or self.height() > self.width())
-        self.content_layout.setDirection(QBoxLayout.TopToBottom if compact else QBoxLayout.LeftToRight)
-        self.tabs.setMinimumHeight(330 if compact else 0)
-        self.deck.setMinimumHeight((510 if page == 0 else 350) if compact else 0)
-        self.deck.setMinimumWidth(0)
-        self.deck.setMaximumWidth(16777215)
-
-        width = max(286, self.width() - 52)
-        if not compact:
-            width = max(464, min(690, int((self.width() - 54) * 0.48)))
-            if page == 2:
-                settings_minimum = self.page_wheel.settings_scroll.widget().minimumSizeHint().width()
-                width = min(width, max(255, self.width() - 74 - settings_minimum))
-            self.deck.setFixedWidth(width)
-        requested = preview_radius_of(self.cfg)
-        reserved = 295 if page == 2 else 649
-        available = 132 if compact else max(105, (self.height() - reserved) // 2)
-        radius = min(requested, available, (width - 88) // 2)
+        if page not in (0, 2):
+            return
+        work_width = self.width() - 54
+        width = max(344, min(690, round(work_width * 0.44)))
+        if page == 2:
+            settings_minimum = self.page_wheel.settings_scroll.widget().minimumSizeHint().width()
+            width = min(width, max(245, work_width - settings_minimum - 16))
+        self.deck_column.setFixedWidth(width)
+        self.detail.set_compact_width(width < 463)
+        work_height = self.work_viewport.height()
+        compact_height = work_height < 410
+        self.page_lib.set_compact_height(compact_height)
+        stage_margins = (11, 9, 11, 8) if compact_height else (17, 15, 17, 14)
+        self.stage_layout.setContentsMargins(*stage_margins)
+        self.stage_layout.setSpacing(5 if compact_height else 8)
+        self.stage_hint.setVisible(page == 0 and not compact_height)
+        if page == 2:
+            preview_height = max(142, work_height - 66)
+        else:
+            detail_height = min(285, round(work_height * 0.39))
+            stage_controls = 36 if compact_height else 79
+            preview_height = max(142, work_height - detail_height - stage_controls - 12)
+        preview_side = min(width - 36, preview_height)
+        radius = min(preview_radius_of(self.cfg), (preview_side - PREVIEW_PAD) // 2)
         self.preview_cfg["wheel_radius"] = radius
         side = radius * 2 + PREVIEW_PAD
         self.preview.setFixedSize(side, side)

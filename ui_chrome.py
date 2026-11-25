@@ -2,11 +2,11 @@
 
 import ctypes
 
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, QRectF, Qt, QVariantAnimation
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPointF, QRectF, Qt, QVariantAnimation
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
-    QAbstractButton, QAbstractSlider, QAbstractSpinBox, QComboBox, QLabel,
-    QLineEdit, QMenu, QWidget, QWidgetAction,
+    QAbstractButton, QAbstractSlider, QAbstractSpinBox, QComboBox, QDoubleSpinBox,
+    QLabel, QLineEdit, QMenu, QSlider, QSpinBox, QWidget, QWidgetAction,
 )
 
 
@@ -16,6 +16,78 @@ def motion_allowed() -> bool:
         0x1042, 0, ctypes.byref(enabled), 0  # SPI_GETCLIENTAREAANIMATION
     )
     return bool(enabled.value) if result else True
+
+
+class Dropdown(QComboBox):
+    """先打开选项列表，才允许更改当前值。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("""
+QComboBox { combobox-popup: 0; padding-right: 30px; }
+QComboBox::drop-down { subcontrol-origin: border; subcontrol-position: top right;
+    width: 30px; border: none; background: transparent; }
+QComboBox::down-arrow { image: none; width: 0; height: 0; }
+""")
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        center = QPointF(self.width() - 17, self.height() / 2)
+        chevron = QPainterPath(center + QPointF(-4, -2))
+        chevron.lineTo(center + QPointF(0, 2))
+        chevron.lineTo(center + QPointF(4, -2))
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor("#315e59" if self.isEnabled() else "#82948d"), 1.5)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.drawPath(chevron)
+
+    def mousePressEvent(self, event):
+        if not self.isEditable() and event.button() == Qt.LeftButton:
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if not self.isEditable() and event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.showPopup()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event):
+        # 让设置页接管滚动，避免鼠标经过下拉框时改动配置。
+        event.ignore()
+
+    def keyPressEvent(self, event):
+        if self.view().isVisible() or self.isEditable():
+            super().keyPressEvent(event)
+            return
+        key = event.key()
+        if key in (Qt.Key_Space, Qt.Key_F4, Qt.Key_Up, Qt.Key_Down):
+            self.showPopup()
+            event.accept()
+        elif key in (Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp, Qt.Key_PageDown) or event.text().isprintable():
+            event.ignore()
+        else:
+            super().keyPressEvent(event)
+
+
+class Slider(QSlider):
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class SpinBox(QSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class DoubleSpinBox(QDoubleSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
 
 
 class ButtonFeedback(QObject):

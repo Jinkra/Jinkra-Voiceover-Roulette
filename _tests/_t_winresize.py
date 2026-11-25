@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt  # noqa: E402
 from PySide6.QtGui import QMouseEvent  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import sr_roulette as sr  # noqa: E402
@@ -277,14 +278,21 @@ w.start_resize = real_start_resize
 print()
 print("=== B. 工作台随宽度调整 ===")
 library_widths = []
-for width in (w.minimumWidth(), 1120, 1400, 1900):
-    w.resize(width, 900)
-    app.processEvents()
+for width, height in ((w.minimumWidth(), w.minimumHeight()), (813, 587), (860, 970),
+                      (1120, 760), (1400, 900), (1900, 1000)):
+    w.resize(width, height)
+    QTest.qWait(65)
     library_widths.append(w.page_lib.width())
+    preview = w.preview.mapTo(w, QPoint(0, 0))
+    library = w.page_lib.mapTo(w, QPoint(0, 0))
+    check(preview.x() >= library.x() + w.page_lib.width() and abs(preview.y() - library.y()) < 75,
+          f"{width} × {height} 时音效库和轮盘预览并排可见")
+    check(w.preview.visibleRegion().boundingRect() == w.preview.rect() and w.deck.viewport().height() >= 60,
+          f"{width} × {height} 时轮盘完整可见且下方参数可滚动")
     check(w.deck.viewport().width() >= w.detail.width(),
           f"窗口 {width} 时参数区的完整宽度可见",
           f"{w.deck.viewport().width()} >= {w.detail.width()}")
-check(library_widths[1:] == sorted(library_widths[1:]) and library_widths[1] < library_widths[-1],
+check(library_widths == sorted(library_widths) and library_widths[0] < library_widths[-1],
       "音效库随窗口变宽", str(library_widths))
 w.navigation.button(3).click()
 app.processEvents()

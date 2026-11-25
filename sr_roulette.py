@@ -83,7 +83,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 import numpy as np
-from audio_routes import MIC_ENDPOINT, is_jinkra_endpoint, unique_endpoint
+from audio_routes import MIC_ENDPOINT, MIX_ENDPOINT, is_jinkra_endpoint, unique_endpoint
 from ui_chrome import ButtonFeedback, branded_menu
 from gamepad_input import BUTTON_LABELS, GamepadInput
 from PySide6.QtCore import (
@@ -124,10 +124,14 @@ from PySide6.QtMultimedia import (
     QMediaPlayer,
 )
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
+    QLineEdit,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QSystemTrayIcon,
+    QTextEdit,
     QWidget,
 )
 
@@ -162,7 +166,7 @@ import theme
 from theme import accent, accent_dark, accent_light, set_accent
 
 APP_NAME = "Jinkra Voiceover Roulette"
-APP_VERSION = "v1.3.3"
+APP_VERSION = "v1.3.4"
 
 DEBUG = os.environ.get("SR_DEBUG") == "1"
 
@@ -1311,11 +1315,23 @@ def voice_input_for(output_name: str):
     return unique_endpoint(all_inputs())
 
 
+def virtual_route_status():
+    """返回已配对的混音端点，或指出 Windows 还缺哪条线路。"""
+    outputs = [dev for dev in virtual_outputs() if is_jinkra_endpoint(dev.description())]
+    inputs = [dev for dev in all_inputs() if is_jinkra_endpoint(dev.description())]
+    if len(outputs) == len(inputs) == 1:
+        return outputs[0], ""
+    if len(outputs) > 1 or len(inputs) > 1:
+        return None, "Windows 识别到多个 Jinkra 端点，请先检查重复的录音或播放设备。"
+    if inputs:
+        return None, f"已检测到录音设备 {MIC_ENDPOINT}，还缺少播放端 {MIX_ENDPOINT}。"
+    if outputs:
+        return None, f"已检测到播放端 {MIX_ENDPOINT}，还缺少录音设备 {MIC_ENDPOINT}。"
+    return None, f"Windows 当前未检测到 {MIC_ENDPOINT}。"
+
+
 def guess_virtual_output():
-    output = unique_endpoint(virtual_outputs())
-    if output is not None and voice_input_for(output.description()) is not None:
-        return output
-    return None
+    return virtual_route_status()[0]
 
 
 def monitor_output():
@@ -3878,6 +3894,7 @@ class WheelWidget(QWidget):
         if not self.cfg.get("show_names", True):
             return
         selected = self.selected
+        compact_preview = self.embedded and self.width() < 224
         s = max(0.55, self.paint_scale())
         font = QFont(UI_FONT)
         font.setPointSizeF(max(6.0, 9.0 * s))
@@ -3902,7 +3919,7 @@ class WheelWidget(QWidget):
             # 贴着轮盘边缘，不夹住就会画出窗口被裁掉半截。
             edge_room = min(tx - (cx - radius + 8.0 * s), (cx + radius - 8.0 * s) - tx)
             label_w = max(28.0 * s, min(tangent_w, max(0.0, edge_room) * 2.0))
-            raw = self.bank.name_at(idx)
+            raw = str(sid + 1) if compact_preview else self.bank.name_at(idx)
             text = fm.elidedText(raw, Qt.ElideRight, int(label_w))
             if idx == selected:
                 fill = accent()
@@ -4028,6 +4045,7 @@ class WheelWidget(QWidget):
         if getattr(self, "embedded", False):
             # 配置窗口里的预览：文案要讲"编辑"，不能讲"松开播放"
             hint = getattr(self, "center_hint", "")
+            compact_preview = self.width() < 224
             if hint:
                 # 拖着音效到中心：提示放主标题（大字 + 强调色），一眼能看到；
                 # 小字说明松手之后会发生什么
@@ -4037,10 +4055,12 @@ class WheelWidget(QWidget):
                 p.setFont(fh)
                 p.setPen(QPen(accent_light(255)))
                 main_hint = QFontMetrics(fh).elidedText(
-                    hint, Qt.ElideRight, int(inner * 2.0)
+                    "追加" if compact_preview else hint, Qt.ElideRight, int(inner * 2.0)
                 )
                 # 只有真的停在中心才说"追加到末尾"，还在扇区上就留空
-                sub_hint = getattr(self, "center_sub_hint", "") or ""
+                sub_hint = "" if compact_preview else getattr(self, "center_sub_hint", "") or ""
+            elif compact_preview:
+                main_hint = sub_hint = ""
             elif selected is None:
                 main_hint = "点击扇区"
                 sub_hint = f"共 {n} 个音效"
@@ -4960,14 +4980,8 @@ class WheelController(QObject):
 
 # ---------------------------------------------------------------- 输入轮询
 
-def settings_blocks_hotkey(win) -> bool:
-    """设置窗口是不是正"占着键盘"（占了就先别响应热键）。
-
-    以前判的是「窗口可见」。可程序默认启动就打开设置窗口
-    （open_settings_on_start 默认 True），用户切到游戏后那个窗口仍留在后台
-    "可见"，热键就被永久判定成暂停 —— 表现就是轮盘怎么按都不出来。
-    现在只认「窗口在前台且没最小化」：切到游戏，它自动让路。
-    """
+def settings_has_focus(win) -> bool:
+    """设置窗口或它的子窗口在前台。"""
     if win is None:
         return False
     try:
@@ -4986,6 +5000,19 @@ def settings_blocks_hotkey(win) -> bool:
         return False
 
 
+def settings_blocks_hotkey(win) -> bool:
+    """编辑输入框、子窗口或弹出菜单时，键盘留给当前操作。"""
+    if not settings_has_focus(win):
+        return False
+    active = QApplication.activeWindow()
+    return (
+        (active is not None and active is not win)
+        or QApplication.activePopupWidget() is not None
+        or QApplication.activeModalWidget() is not None
+        or isinstance(QApplication.focusWidget(), (QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox))
+    )
+
+
 class InputPoller(QObject):
     """GetAsyncKeyState 轮询。全程无钩子，不阻断游戏输入。"""
 
@@ -5002,6 +5029,7 @@ class InputPoller(QObject):
         # 切换轮盘的那个键：单独一套按下/松手状态，和主热键互不干扰
         self._sw_prev = False
         self._sw_at = 0.0
+        self._sw_canceled = False
         # 用户选中了另一套轮盘时调这里（由主程序接上"真的去切"）
         self.on_switch_wheel: object = None
         # 按下某套盘的专属键时调这里：`fn(wid)` = 临时把那一套摆上台面，
@@ -5022,7 +5050,7 @@ class InputPoller(QObject):
         self._wh_prev: dict[str, bool] = {}   # 盘键上一帧是否按着
         self._prev = False
         self._press_at = 0.0
-        self._held_to_wheel = False   # 这次按住有没有弹出过轮盘（区分长按/轻按）
+        self._held_to_wheel = False   # 已开轮盘或已取消轻按动作
         # 这次按住已经被鼠标键取消过了：松手前不许再弹出来
         self._canceled = False
         # 左/右键的上一帧状态：只在"刚按下"那一下取消，按住不放不会反复触发
@@ -5051,9 +5079,10 @@ class InputPoller(QObject):
         # 音效键 -> 最近一次触发的编号（停止键要能把这次的声音一起掐掉；
         # 没上轮盘、只能靠专属热键播的组合全靠它）
         self._last_token: dict[str, int] = {}
-        # 返回 True 时暂停响应按键（配置窗口打开时用，免得打字把轮盘弹出来）
+        # 录入、菜单等交互暂停所有热键；设置页普通浏览只暂停直接播放的热键。
         self.paused: object = None
-        # 用户自己按出来的暂停（轮盘中心松手）。和上面那个"设置窗口占着键盘"
+        self.sound_paused: object = None
+        # 用户自己按出来的暂停（轮盘中心松手）。和上面那个"编辑控件占着键盘"
         # 的临时让路是两回事：这个必须用户再操作一次才会解除。
         self.user_paused = False
         # 暂停状态变了通知外面（主程序用它播暂停/恢复动画）
@@ -5149,23 +5178,19 @@ class InputPoller(QObject):
 
         用户自己暂停（user_paused）时不挡这个键 —— 暂停挡的是"会出声的东西"，
         切换轮盘本身不出声，而且暂停期间换盘是正常操作（想换个盘再选音效恢复）。
-        真正要挡的是设置窗口占着键盘那种临时让路，那是另一回事。
+        编辑控件占用键盘时由主轮询暂停。
         """
         sw = self.switcher
         key = norm_spec(self.cfg.get("switch_key", ""))
         if sw is None or not key or key == self.hotkey_name:
             self._sw_prev = False
             return
-        if self.paused is not None and self.paused():
-            self._sw_prev = self._down(key)
-            self._sw_at = time.monotonic()
-            return
-
         down = self._down(key)
         now = time.monotonic()
         if down and not self._sw_prev:
             self._sw_at = now
-        elif down and not sw.active:
+            self._sw_canceled = False
+        elif down and not sw.active and not self._sw_canceled:
             if (now - self._sw_at) * 1000.0 >= float(self.cfg["hold_ms"]):
                 if self.wheel.active:
                     self.wheel.hide_wheel()   # 主轮盘开着就先关掉，一次只显示一个
@@ -5687,10 +5712,30 @@ class InputPoller(QObject):
             if clear is not None:      # 测试里的假 raw 可能没实现，忽略即可
                 clear()
 
+    def _suspend_sound_shortcuts(self) -> None:
+        for previous in (self._action_prev, self._key_prev, self._unlock_prev, self._stop_prev):
+            for key in previous:
+                previous[key] = self._down(key)
+        self._stop_holds()
+        self._repeat_next.clear()
+
+    def _suspend_wheel_shortcuts(self) -> None:
+        if self.wheel.active:
+            self.wheel.hide_wheel()
+        self._release_wheel_hotkey(force=True)
+        self._prev = self._down(self.hotkey_name)
+        self._canceled = self._held_to_wheel = self._prev
+        self._wh_prev = {key: self._down(key) for _, key in self._wheel_hotkey_pairs()}
+        switch_key = norm_spec(self.cfg.get("switch_key", ""))
+        self._sw_prev = self._sw_canceled = self._down(switch_key)
+        if self.switcher is not None and self.switcher.active:
+            self.switcher.hide_wheel()
+
     def _tick_once(self) -> None:
         self.gamepad.update()
         self._pad_suppressed.intersection_update(self.gamepad.buttons)
         settings_paused = self.paused is not None and self.paused()
+        sound_paused = settings_paused or (self.sound_paused is not None and self.sound_paused())
         if self.gamepad.cancelled or settings_paused:
             self._cancel_gamepad()
         if settings_paused:
@@ -5715,28 +5760,11 @@ class InputPoller(QObject):
                 mouse_pressed = True
             self._mouse_prev[name] = d
 
+        if sound_paused:
+            self._suspend_sound_shortcuts()
         if settings_paused:
-            # 暂停期间同步状态，恢复时不会把"暂停前按住"当成新按下
-            self._prev = self._down(self.hotkey_name)
-            self._press_at = time.monotonic()
-            for key, _a in self._actions:
-                self._action_prev[key] = self._down(key)
-            for key in self._by_key:
-                self._key_prev[key] = self._down(key)
-            for key in self._unlock_keys:
-                self._unlock_prev[key] = self._down(key)
-            for key in self._stop_keys:
-                self._stop_prev[key] = self._down(key)
-            # 长按触发的声音不会因为"切去设置窗口"就自己停：这里主动掐掉，
-            # 否则用户改完设置回来，发现有个声音一直在响
-            self._stop_holds()
-            self._repeat_next.clear()
-            # 轮盘正弹着的时候切到设置窗口：先把它收掉。
-            # 这里每帧会直接 return，不收的话轮盘会一直挂在屏幕上下不来。
-            if self.wheel.active:
-                self.wheel.hide_wheel()
-                self._held_to_wheel = True
-            self._release_wheel_hotkey(force=True)
+            # 编辑时按住的呼出键必须先松开，退出输入框不能误触发。
+            self._suspend_wheel_shortcuts()
             return
 
         # 按着某套轮盘的专属键：先把盘切过去，再把呼出键借给它，
@@ -5747,7 +5775,7 @@ class InputPoller(QObject):
 
         if down and not self._prev:
             self._press_at = now
-            self._held_to_wheel = False
+            self._held_to_wheel = sound_paused
             self._canceled = False        # 新的一次按住：清掉上次的取消标记
         elif down and not self.wheel.active and not self._canceled:
             if (now - self._press_at) * 1000.0 >= float(self.cfg["hold_ms"]):
@@ -5787,7 +5815,7 @@ class InputPoller(QObject):
             elif not self._held_to_wheel:
                 # 轻按热键：没长到弹轮盘，就执行配置的"轻按动作"。
                 # 暂停期间这一下要挡掉，否则暂停就名不副实了。
-                if not self.user_paused:
+                if not (self.user_paused or sound_paused):
                     self.run_tap_action()
         self._prev = down
 
@@ -5806,6 +5834,8 @@ class InputPoller(QObject):
         self._tick_switch()
         # 松手那一下已经处理完（播放选中 / 停止 / 轻按动作），现在把键还回去
         self._release_wheel_hotkey()
+        if sound_paused:
+            return
 
         # 全局一击动作：只在"按下的那一下"触发，按住不会连发
         for key, action in self._actions:
@@ -5914,6 +5944,7 @@ def main() -> int:
     switcher = WheelSwitchController(cfg, scfg, raw)
     poller = InputPoller(cfg, wheel, audio, switcher)
     poller.paused = lambda: settings_blocks_hotkey(_settings_holder.get("win"))
+    poller.sound_paused = lambda: settings_has_focus(_settings_holder.get("win"))
 
     # 用户暂停/恢复：改轮盘中心的提示文案，再在屏幕上闪一下
     pause_toast = PauseToast(cfg)
@@ -6168,7 +6199,7 @@ def main() -> int:
     menu.addAction(act_open)
 
     menu.addSeparator()
-    act_quit = QAction("退出 Jinkra", menu)
+    act_quit = QAction("退出软件", menu)
     def quit_app():
         win = _settings_holder.get("win")
         if win is not None and win.isVisible():

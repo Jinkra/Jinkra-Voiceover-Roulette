@@ -1,11 +1,6 @@
-"""回归：设置窗口不该把轮盘热键永久憋死。
+"""回归：设置页浏览和编辑时的轮盘热键。
 
-背景（2026-11-01 用户报「设置页面会导致无法呼出轮盘」）：
-    旧逻辑把「设置窗口可见」当成「正在占着键盘」就暂停热键。而程序默认
-    启动就打开设置窗口（open_settings_on_start 默认 True），用户切到游戏
-    后那个窗口仍在后台"可见"，热键就被永久判成暂停 —— 轮盘怎么按都不出来。
-
-跑法：python _t_hotkey_pause.py
+普通浏览和游戏内可以长按呼出轮盘，录入和模态交互期间暂停。
 """
 import os
 import sys
@@ -17,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QVBoxLayout, QWidget  # noqa: E402
 
 import sr_roulette as sr  # noqa: E402
 
@@ -63,8 +58,8 @@ check(sr.settings_blocks_hotkey(FakeWin(visible=True, active=False)) is False,
       "窗口在后台（切去游戏了）→ 不暂停  ★这就是本次修的 bug")
 check(sr.settings_blocks_hotkey(FakeWin(visible=True, minimized=True)) is False,
       "窗口最小化 → 不暂停")
-check(sr.settings_blocks_hotkey(FakeWin(visible=True, active=True)) is True,
-      "窗口在前台 → 暂停（免得打字把轮盘弹出来）")
+check(sr.settings_has_focus(FakeWin(visible=True, active=True)) is True,
+      "窗口在前台时可以区分呼出和直接播放")
 
 
 class DeadWin:
@@ -139,7 +134,7 @@ cfg["hold_ms"] = 60
 wheel = FakeWheel()
 poller = sr.InputPoller(cfg, wheel, FakeAudio(), None)
 
-# 用一个手动开关模拟"设置窗口在前台"
+# 用一个手动开关模拟录入快捷键。
 state = {"down": False, "paused": False}
 poller._down = lambda name: state["down"] if name == "y" else False
 poller.paused = lambda: state["paused"]
@@ -151,10 +146,10 @@ time.sleep(0.08)
 poller.tick()
 check(wheel.shown == 1, "正常状态：长按能弹出轮盘", f"shown={wheel.shown}")
 
-# 2) 暂停（设置窗口在前台）：不该弹，而且已经开着的轮盘要被收掉
+# 2) 进入录入框：已经开着的轮盘要被收掉。
 state["paused"] = True
 poller.tick()
-check(wheel.active is False, "切到设置窗口时，已弹出的轮盘会自动收起")
+check(wheel.active is False, "进入录入框时，已弹出的轮盘会自动收起")
 check(wheel.hidden >= 1, "确实调用过收起", f"hidden={wheel.hidden}")
 
 shown_before = wheel.shown
@@ -162,8 +157,12 @@ time.sleep(0.08)
 poller.tick()
 check(wheel.shown == shown_before, "暂停期间按住不会弹出轮盘")
 
-# 3) 关掉设置窗口（恢复）：再按一次应该能正常弹
+# 3) 离开录入框后，仍按住的键不会补触发，松开再按即可。
 state["paused"] = False
+poller.tick()
+time.sleep(0.08)
+poller.tick()
+check(wheel.shown == shown_before, "离开录入框时已按住的键不会误弹轮盘")
 state["down"] = False
 poller.tick()                      # 先松手，清状态
 state["down"] = True
@@ -172,6 +171,45 @@ time.sleep(0.08)
 poller.tick()
 check(wheel.shown == shown_before + 1, "恢复后长按又能弹出（不是永久卡死）",
       f"shown={wheel.shown}")
+
+print()
+print("=== 设置页浏览与录入 ===")
+window = QWidget()
+layout = QVBoxLayout(window)
+navigation = QPushButton("快捷键")
+key_input = QLineEdit()
+layout.addWidget(navigation)
+layout.addWidget(key_input)
+window.show()
+window.activateWindow()
+navigation.setFocus()
+app.processEvents()
+check(sr.settings_has_focus(window) and not sr.settings_blocks_hotkey(window),
+      "设置页在前台浏览时，允许呼出轮盘")
+wheel = FakeWheel()
+audio = FakeAudio()
+taps = []
+audio.play_repeat_last = lambda: taps.append("tap")
+poller = sr.InputPoller(cfg, wheel, audio)
+poller.paused = lambda: sr.settings_blocks_hotkey(window)
+poller.sound_paused = lambda: sr.settings_has_focus(window)
+state = {"down": False}
+poller._down = lambda key: state["down"] if key == "y" else False
+state["down"] = True
+poller.tick()
+state["down"] = False
+poller.tick()
+check(not taps and not wheel.active, "浏览设置页时短按不误播放")
+state["down"] = True
+poller.tick()
+time.sleep(0.08)
+poller.tick()
+check(wheel.active, "设置页可以按住快捷键呼出轮盘")
+key_input.setFocus()
+app.processEvents()
+poller.tick()
+check(sr.settings_blocks_hotkey(window) and not wheel.active, "输入框取得焦点后保护录入并收起轮盘")
+window.close()
 
 print()
 print("=== C 用户暂停期间，切换轮盘的键照常能用 ===")
@@ -229,7 +267,7 @@ poller2.tick()
 check(picked == ["w2"], "松手后真的切到了另一套", str(picked))
 check(poller2.user_paused is True, "切换轮盘不会顺手解除暂停")
 
-# 设置窗口占着键盘时仍然要挡（那是另一回事，不该被这次改动放开）
+# 编辑控件占着键盘时，切换键也暂停。
 kstate["f8"] = False
 poller2.tick()
 poller2.paused = lambda: True
@@ -237,7 +275,7 @@ kstate["f8"] = True
 poller2.tick()
 time.sleep(0.08)
 poller2.tick()
-check(sw.shown == 1, "设置窗口在前台时，切换键照旧不响应", f"shown={sw.shown}")
+check(sw.shown == 1, "录入期间切换键不响应", f"shown={sw.shown}")
 
 print()
 print(f"通过 {len(OK)} 项，失败 {len(BAD)} 项")

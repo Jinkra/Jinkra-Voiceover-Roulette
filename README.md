@@ -6,6 +6,8 @@
 
 ![主界面](docs/main.png)
 
+[查看小窗布局](docs/workbench-compact.png)
+
 ## 它有什么
 
 - **长按弹轮盘 / 单击播放**：长按热键约 0.25 秒弹出，松开即播；轻点一下就播这个轮盘上次响过的那个（一次没播过就播第一格），不用开轮盘
@@ -55,7 +57,9 @@
 
 在应用中选择实体麦克风。系统安装 Jinkra 自带驱动后，打开送声并在游戏或聊天软件中将输入设为 **Jinkra Virtual Mic**。Jinkra 在应用内完成麦克风与音效混音，并自动识别自己的录音与播放端点。
 
-本次 Windows 便携包提供本地播放、实体麦克风测试以及驱动状态检测。系统级送声仍待驱动构建、正式签名和实机验证。驱动工程、验证方法和发布条件见 [Jinkra Virtual Mic](native/virtual-mic/README.md)。
+启动向导和「语音输出」页都有「安装虚拟麦克风」按钮。它会安装 EXE 同目录下 `VirtualMic` 中的驱动，或在该目录缺失时让你选择 Jinkra 正式签名驱动所在的文件夹。Windows 检测到 `Jinkra Virtual Mic` 和 `Jinkra Mix Input` 后即可启用混音送声。
+
+当前 Windows 便携包提供本地播放、实体麦克风测试以及驱动安装入口。正式签名驱动仍待发布。驱动工程、验证方法和发布条件见 [Jinkra Virtual Mic](native/virtual-mic/README.md)。
 
 ## 跑起来
 
