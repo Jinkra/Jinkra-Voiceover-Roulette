@@ -159,7 +159,8 @@ sounds 目录里的所有音效都会列在这儿。
   设置、音效和激活记录原样保留，被你删改过的示例音效也不会被放回来。
 · 以前的便携版：运行安装包时把安装目录选成原来的文件夹即可转成安装版。
 · 卸载：在 Windows「设置 → 应用」里找到 Jinkra Voiceover Roulette，或运行安装目录里的
-  Uninstall Jinkra Voiceover Roulette.exe。可选择保留用户数据，以后装回同一目录继续使用。
+  Uninstall Jinkra Voiceover Roulette.exe。默认删除整个安装目录；勾选「保留用户数据」可保留
+  设置、音效和激活记录，以后装回同一目录继续使用。
   卸载时可勾选「同时卸载虚拟麦克风（VB-CABLE）」，确认管理员提示后自动移除，
   重启电脑后彻底清除。其他软件若也在用 VB-CABLE，请不要勾选。
 

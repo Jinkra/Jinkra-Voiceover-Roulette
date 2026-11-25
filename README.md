@@ -101,7 +101,7 @@ python build_installer.py
 - `Jinkra-Voiceover-Roulette-vX.Y.Z-Windows-x64.zip`：应用内「检查更新」下载的包。
 - 两者的 `.sha256`。
 
-安装目录里的 `Uninstall Jinkra Voiceover Roulette.exe` 是卸载向导，可选择保留设置、音效和激活记录，也可勾选「同时卸载虚拟麦克风」（用 VB-CABLE 安装程序自带的 `-u -h` 静默卸载，需确认管理员提示）。安装器和卸载器的源码在 [native/Setup.cs](native/Setup.cs)。已有的便携版目录可以直接选作安装目录，设置和音效原样保留。
+安装目录里的 `Uninstall Jinkra Voiceover Roulette.exe` 是卸载向导，默认删除整个安装目录，也可勾选保留设置、音效和激活记录，也可勾选「同时卸载虚拟麦克风」（用 VB-CABLE 安装程序自带的 `-u -h` 静默卸载，需确认管理员提示）。安装器和卸载器的源码在 [native/Setup.cs](native/Setup.cs)。已有的便携版目录可以直接选作安装目录，设置和音效原样保留。
 
 静默安装与卸载（用于测试或部署）：
 

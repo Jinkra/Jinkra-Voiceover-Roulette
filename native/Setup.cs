@@ -114,21 +114,22 @@ internal sealed class RouletteSetup : Form {
         desktopShortcut = PlaceChoice("创建桌面快捷方式", 262, true);
         launchAfter = PlaceChoice("安装完成后打开 Jinkra Voiceover Roulette", 291, true);
         browse.Visible = desktopShortcut.Visible = launchAfter.Visible = !removing;
-        keepData = PlaceChoice("保留用户数据（设置、音效、降噪模型和激活记录）", 262, true);
+        // 默认彻底卸载：只有用户主动勾选才保留设置和音效，避免让人以为没卸干净。
+        keepData = PlaceChoice("保留用户数据（设置、音效、降噪模型和激活记录）", 262, false);
         keepData.Visible = removing;
         removeCable = PlaceChoice("同时卸载虚拟麦克风（VB-CABLE）", 291, false);
         removeCable.Visible = removing && CableInstalled();
-        status = PlaceLabel(removing ? "保留设置、音效和激活记录，重新安装到同一目录即可继续使用。"
+        status = PlaceLabel(removing ? "将删除整个安装目录，包括设置、音效、降噪模型和激活记录。"
                                      : "仅为当前 Windows 用户安装，不需要管理员权限。",
             301, 332, 409, 60, 9, Muted, FontStyle.Regular);
         removeCable.CheckedChanged += delegate {
             if (removeCable.Checked) SetStatus("卸载虚拟麦克风需要确认 Windows 管理员提示。其他软件若也在用 VB-CABLE，会一起失去这个设备。", false);
             else SetStatus(keepData.Checked ? "保留设置、音效和激活记录，重新安装到同一目录即可继续使用。"
-                                            : "设置、音效和激活记录将被一并删除。", !keepData.Checked);
+                                            : "将删除整个安装目录，包括设置、音效、降噪模型和激活记录。", false);
         };
         keepData.CheckedChanged += delegate {
             SetStatus(keepData.Checked ? "保留设置、音效和激活记录，重新安装到同一目录即可继续使用。"
-                                       : "设置、音效和激活记录将被一并删除。", !keepData.Checked);
+                                       : "将删除整个安装目录，包括设置、音效、降噪模型和激活记录。", false);
         };
         progress.SetBounds(302, 412, 404, 10);
         progress.Visible = false;
