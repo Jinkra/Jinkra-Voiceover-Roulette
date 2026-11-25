@@ -3841,7 +3841,8 @@ class MicPage(QWidget):
         row.addWidget(self.btn_refresh)
         self.btn_install = QPushButton("安装虚拟麦克风")
         self.btn_install.clicked.connect(self._install_driver)
-        self.driver_installation = driver_setup.for_application(sr.BASE_DIR, sr.RESOURCE_DIR)
+        self.driver_installation = driver_setup.for_application(
+            sr.BASE_DIR, sr.RESOURCE_DIR, lambda: sr.virtual_route_status()[0] is not None)
         self.driver_installation.changed.connect(self._refresh_status)
         self.driver_installation.installed.connect(self._driver_installed)
         row.addWidget(self.btn_install)
@@ -3976,6 +3977,9 @@ class MicPage(QWidget):
         status = self.engine.audio_status() if self.engine is not None else {}
         output, missing = sr.virtual_route_status()
         ready = output is not None
+        mic_name = sr.voice_mic_name(output)
+        if self.output_name.text() != mic_name:
+            self.output_name.setText(mic_name)
         self.chk_enable.setEnabled(ready or enabled)
         self.btn_copy.setEnabled(ready)
         self.btn_install.setEnabled(not ready and self.driver_installation.can_install())
@@ -3984,7 +3988,7 @@ class MicPage(QWidget):
         if not ready:
             lines = [missing, self.driver_installation.hint()]
         elif status.get("cable_active") and status.get("cable") == output.description():
-            lines = ["混音已送出。在游戏或语音软件中选择 Jinkra Virtual Mic。"]
+            lines = [f"混音已送出。在游戏或语音软件中选择 {mic_name}。"]
         elif enabled:
             lines = [status.get("cable_error") or "正在打开混音线路。"]
         else:
@@ -4321,7 +4325,7 @@ class HelpPage(QWidget):
             ),
             (
                 "9｜让队友也听到",
-                "在「语音输出」页选择实体麦克风。Windows 识别到自带驱动后，启用送声并在游戏中选择 Jinkra Virtual Mic。"
+                "在「语音输出」页选择实体麦克风，点「安装虚拟麦克风」并按提示装好 VB-CABLE，启用送声后在游戏中选择录音设备 CABLE Output。"
                 "驱动缺失时仍可本地播放和测试实体麦克风。",
             ),
             (
@@ -4502,8 +4506,8 @@ class HelpPage(QWidget):
                 "打开 jinkra_roulette.log 并搜索「耳机输出=」，可查看实际使用的设备。",
             ),
             (
-                "Q5 游戏里没有 Jinkra Virtual Mic？",
-                "打开「语音输出」并点击「重新检测」。系统须先成功安装正式签名的 Jinkra 虚拟音频驱动。"
+                "Q5 游戏里没有虚拟麦克风（CABLE Output）？",
+                "打开「语音输出」并点击「重新检测」。若还没装，点「安装虚拟麦克风」并在 VB-CABLE 窗口点「Install Driver」，必要时重启电脑。"
                 "安装完成后，可重启语音软件刷新录音设备列表。",
             ),
             (

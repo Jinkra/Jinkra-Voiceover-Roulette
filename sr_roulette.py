@@ -83,7 +83,8 @@ from ctypes import wintypes
 from pathlib import Path
 
 import numpy as np
-from audio_routes import MIC_ENDPOINT, MIX_ENDPOINT, is_jinkra_endpoint, unique_endpoint
+from audio_routes import (JINKRA, MIC_ENDPOINT, MIX_ENDPOINT, VB_CABLE, is_jinkra_endpoint,
+                          route_of, unique_endpoint)
 from ui_chrome import ButtonFeedback, branded_menu
 from gamepad_input import BUTTON_LABELS, GamepadInput
 from PySide6.QtCore import (
@@ -1304,30 +1305,50 @@ def all_inputs() -> list:
 
 
 def virtual_outputs() -> list:
-    """枚举本产品的混音出口。"""
+    """枚举可送声线路的播放端（Jinkra Mix Input 或 VB-CABLE 的 CABLE Input）。"""
     return [device for device in QMediaDevices.audioOutputs()
-            if is_jinkra_endpoint(device.description())]
+            if route_of(device.description()) is not None]
 
 
 def voice_input_for(output_name: str):
-    if not is_jinkra_endpoint(output_name):
-        return None
-    return unique_endpoint(all_inputs())
+    route = route_of(output_name)
+    return None if route is None else unique_endpoint(all_inputs(), route)
+
+
+def voice_mic_name(output=None) -> str:
+    """游戏或语音软件里应选择的录音设备名。"""
+    if output is None:
+        output = guess_virtual_output()
+    route = route_of(output.description()) if output is not None else None
+    return (route or JINKRA).capture
+
+
+def _route_pair(route):
+    outputs = [dev for dev in virtual_outputs() if route.render_matches(dev.description())]
+    inputs = [dev for dev in all_inputs() if route.capture_matches(dev.description())]
+    return outputs, inputs
 
 
 def virtual_route_status():
-    """返回已配对的混音端点，或指出 Windows 还缺哪条线路。"""
-    outputs = [dev for dev in virtual_outputs() if is_jinkra_endpoint(dev.description())]
-    inputs = [dev for dev in all_inputs() if is_jinkra_endpoint(dev.description())]
+    """返回已配对的混音端点，或指出 Windows 还缺哪条线路。
+
+    自带的 Jinkra 驱动优先；没有时使用 VB-CABLE（CABLE Input → CABLE Output）。
+    """
+    outputs, inputs = _route_pair(JINKRA)
     if len(outputs) == len(inputs) == 1:
         return outputs[0], ""
     if len(outputs) > 1 or len(inputs) > 1:
         return None, "Windows 识别到多个 Jinkra 端点，请先检查重复的录音或播放设备。"
+    cable_outputs, cable_inputs = _route_pair(VB_CABLE)
+    if len(cable_outputs) == len(cable_inputs) == 1:
+        return cable_outputs[0], ""
     if inputs:
         return None, f"已检测到录音设备 {MIC_ENDPOINT}，还缺少播放端 {MIX_ENDPOINT}。"
     if outputs:
         return None, f"已检测到播放端 {MIX_ENDPOINT}，还缺少录音设备 {MIC_ENDPOINT}。"
-    return None, f"Windows 当前未检测到 {MIC_ENDPOINT}。"
+    if cable_outputs or cable_inputs:
+        return None, "VB-CABLE 端点不完整或有重复，请在 Windows 声音设置中检查 CABLE Input 和 CABLE Output。"
+    return None, "Windows 当前未检测到虚拟麦克风。"
 
 
 def guess_virtual_output():
@@ -2425,7 +2446,8 @@ class AudioEngine(QObject):
 
     出口最多两个：
     - 耳机（默认输出）：只放音效，自己听得见
-    - 虚拟声卡（Jinkra Mix Input）：音效与麦克风原声由 Jinkra Virtual Mic 输出
+    - 虚拟声卡（Jinkra Mix Input 或 VB-CABLE 的 CABLE Input）：音效与麦克风原声
+      由对应的录音端（Jinkra Virtual Mic / CABLE Output）送进游戏
 
     两个出口各有一个 Mixer，各走各的播放进度。共用一个混音器会让两次"取数据"
     互相抢游标，听起来就是持续的咔咔声——这是双路输出的第一道坑。
@@ -2603,7 +2625,7 @@ class AudioEngine(QObject):
     def _start_cable_sink(self) -> None:
         dev = guess_virtual_output()
         if dev is None:
-            self.cable_error = f"Windows 尚未识别 {MIC_ENDPOINT}"
+            self.cable_error = "Windows 尚未识别虚拟麦克风"
             _log("[cable] " + self.cable_error)
             return
         self._cable_id = dev.id()

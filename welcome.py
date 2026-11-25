@@ -277,7 +277,7 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
         mic.insertWidget(3, self.mic_picker)
         self.mic_status = self._text("请检查麦克风连接和 Windows 麦克风权限，再点击「重新检测」。", note=True)
         mic.insertWidget(4, self.mic_status)
-        self.enable_mic = QCheckBox("通过 Jinkra Virtual Mic 向游戏送声")
+        self.enable_mic = QCheckBox("通过虚拟麦克风向游戏送声")
         self.enable_mic.setChecked(bool(cfg.get("mic_enabled", False)))
         mic.insertWidget(5, self.enable_mic)
         self.driver_status = self._text("", note=True)
@@ -285,7 +285,8 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
         actions = QHBoxLayout()
         self.btn_install = QPushButton("安装虚拟麦克风")
         self.btn_install.clicked.connect(self._install)
-        self.driver_installation = driver_setup.for_application(service.BASE_DIR, service.RESOURCE_DIR)
+        self.driver_installation = driver_setup.for_application(
+            service.BASE_DIR, service.RESOURCE_DIR, lambda: service.virtual_route_status()[0] is not None)
         self.driver_installation.changed.connect(self._refresh_driver_status)
         self.driver_installation.installed.connect(self._driver_installed)
         self.btn_refresh = QPushButton("重新检测")
@@ -453,7 +454,7 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
             self.detect_timer.start()
         if index == 3:
             if self.enable_mic.isChecked():
-                self.summary.setText("送声已启用。Windows 识别设备后，在游戏或语音软件中选择 Jinkra Virtual Mic。")
+                self.summary.setText(f"送声已启用。在游戏或语音软件中选择 {self.service.voice_mic_name()}。")
             else:
                 self.summary.setText("将使用本地播放。虚拟麦克风可在「语音输出」中补设。")
         self.pages.setCurrentIndex(index)
@@ -502,7 +503,7 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
                                  "虚拟麦克风已就绪" if ready else "安装虚拟麦克风")
         if self.pages.currentIndex() == 2:
             self.next.setEnabled(not installing)
-        self.driver_status.setText("已识别 Jinkra Virtual Mic。请在游戏里选择这个录音设备。"
+        self.driver_status.setText(f"已识别虚拟麦克风。请在游戏里选择录音设备 {self.service.voice_mic_name(output)}。"
                                    if ready else f"{missing}\n{self.driver_installation.hint()}")
 
     def _remember_mic(self, index):

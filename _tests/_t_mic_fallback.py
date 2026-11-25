@@ -265,7 +265,7 @@ print("\n=== E. 虚拟声卡 ===")
 engine3 = sr.AudioEngine(bank, dict(sr.DEFAULT_CONFIG))
 sr.guess_virtual_output = lambda prefer="": None
 engine3._start_cable_sink()
-check(engine3.cable_error == f"Windows 尚未识别 {sr.MIC_ENDPOINT}", "没有配对设备时留下错误", engine3.cable_error)
+check(engine3.cable_error == "Windows 尚未识别虚拟麦克风", "没有配对设备时留下错误", engine3.cable_error)
 check("cable_error" in engine3.audio_status(), "状态里带得出去")
 
 # ============ F. 状态与释放 ============

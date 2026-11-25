@@ -116,7 +116,7 @@ check("MIT" in t2 and "LICENSE" in t2, "标明上游许可证和随附文件")
 t3 = all_text(page.sections[2])
 check("5｜调每个音效" in t3, "教程第 5 节标题改成「调每个音效」")
 check("5｜调每个人的声音" not in t3, "没有残留旧标题")
-check("Jinkra Virtual Mic" in t3, "教程说明 Jinkra 虚拟麦克风")
+check("CABLE Output" in t3 and "安装虚拟麦克风" in t3, "教程说明一键安装虚拟麦克风")
 
 t4 = all_text(page.sections[3])
 check(t4.count("Q") >= 10, "常见问题至少 10 条", str(t4.count("Q")))

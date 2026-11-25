@@ -38,6 +38,26 @@ def main() -> None:
         assert sr.guess_virtual_output() is None
         assert "多个 Jinkra 端点" in sr.virtual_route_status()[1]
     assert sr.is_virtual_name(mic.description())
+    cable_out = device("CABLE Input (VB-Audio Virtual Cable)")
+    cable_in = device("CABLE Output (VB-Audio Virtual Cable)")
+    with patch.object(sr.QMediaDevices, "audioOutputs",
+                      return_value=[device("耳机 (USB)"), cable_out,
+                                    device("CABLE In 16ch (VB-Audio Virtual Cable)")]), \
+         patch.object(sr, "all_inputs", return_value=[cable_in, device("USB Mic")]):
+        assert sr.virtual_outputs() == [cable_out]
+        assert sr.guess_virtual_output() is cable_out
+        assert sr.voice_input_for(cable_out.description()) is cable_in
+        assert sr.voice_mic_name(cable_out) == "CABLE Output"
+    with patch.object(sr, "virtual_outputs", return_value=[render, cable_out]), \
+         patch.object(sr, "all_inputs", return_value=[mic, cable_in]):
+        assert sr.guess_virtual_output() is render  # 自带驱动优先
+        assert sr.voice_mic_name() == "Jinkra Virtual Mic"
+    with patch.object(sr, "virtual_outputs", return_value=[cable_out]), \
+         patch.object(sr, "all_inputs", return_value=[]):
+        assert "VB-CABLE" in sr.virtual_route_status()[1]
+    with patch.object(sr, "virtual_outputs", return_value=[]), \
+         patch.object(sr, "all_inputs", return_value=[device("CABLE Output (Some Other Driver)")]):
+        assert sr.virtual_route_status() == (None, "Windows 当前未检测到虚拟麦克风。")
     physical = device("USB Mic")
     with patch.object(sr, "find_input", return_value=physical):
         assert sr.capture_candidates("USB Mic") == [physical]

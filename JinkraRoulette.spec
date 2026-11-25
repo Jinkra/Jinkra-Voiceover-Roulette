@@ -30,6 +30,18 @@ subprocess.run([
 
 DATAS = [("LICENSE", "."), ("icon.ico", "."), ("assets/wechat-promotion.png", "."),
          (str(UPDATER), ".")]
+# VB-CABLE 官方驱动包原样嵌入 EXE（不修改、不解包），用户安装时无需再连 VB-Audio 官网。
+# 构建机只在 build/ 里没有缓存时下载一次，SHA-256 不符直接中止打包。
+import sys
+sys.path.insert(0, str(ROOT))
+import driver_setup
+VB_CABLE = BUILD / driver_setup.VB_CABLE_PACK
+if not driver_setup._valid_pack(VB_CABLE):
+    print(f"[VB-CABLE] 下载 {driver_setup.VB_CABLE_URL}")
+    driver_setup._download_pack(VB_CABLE)
+DATAS.append((str(VB_CABLE), "."))
+print("[自检] VB-CABLE 驱动包校验通过")
+
 DRIVER_HELPER = BUILD / "jinkra-driver-helper.exe"
 if DRIVER_HELPER.is_file():
     DATAS.append((str(DRIVER_HELPER), "."))
