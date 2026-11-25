@@ -3268,7 +3268,7 @@ class WheelPage(QWidget):
             "右边那个预览不跟着这一项涨缩（它按 100% 画），实际大小以游戏内为准。"
         )
         lay.addWidget(_row("整体大小", self.scale, "内外圈和文字一起缩放"))
-        self.opacity = self._slider(int(float(cfg.get("opacity", 0.94)) * 100), 40, 100, " %")
+        self.opacity = self._slider(int(float(cfg.get("opacity", 0.5)) * 100), 40, 100, " %")
         lay.addWidget(_row("不透明度", self.opacity, "暂停提示也用这个值"))
         # 内圈装满 8 个之后轮盘外面会再长一圈，这一项控制那一圈的厚度。
         # 内圈尺寸不受影响，所以"直径"仍然是内圈的直径。

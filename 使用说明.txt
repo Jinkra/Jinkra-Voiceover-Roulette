@@ -644,7 +644,7 @@ VB-CABLE 由 VB-Audio 提供（www.vb-cable.com），是捐赠软件，
   inner_ratio       中空比例，默认 0.42。它同时是"不选中"的范围：
                     白圈半径 = wheel_radius × inner_ratio
                     （v0.8.2 之前的 deadzone_px 已经删掉，判定只认这个）
-  opacity           扇区不透明度，默认 0.94。暂停/恢复提示也用它
+  opacity           扇区不透明度，默认 0.5。暂停/恢复提示也用它
   show_names        是否显示音效文件名，默认 true
 
   fade_ms           淡入淡出时长，默认 6 毫秒。改成 0 会有咔哒声

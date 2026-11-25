@@ -964,7 +964,7 @@ DEFAULT_CONFIG = {
     "wheel_scale": 1.0,
     # 轮盘弹出位置：screen = 固定屏幕正中（推荐），cursor = 跟随鼠标
     "wheel_anchor": "screen",
-    "opacity": 0.94,
+    "opacity": 0.5,
     "show_names": True,
     # 动画总开关（设置页「轮盘」那一栏）：关掉就全部瞬间显示/瞬间消失。
     # 有人晕动/或者嫌动画挡视线，给一个一刀切的出口。
@@ -4289,7 +4289,7 @@ class WheelSwitchWidget(QWidget):
         radius = self.radius()
         inner = self.hole_radius()
         n = len(self.entries)
-        opacity = float(self.cfg.get("opacity", 0.94))
+        opacity = float(self.cfg.get("opacity", 0.5))
         # 「整体大小」也管这个选择器：半径变了，字号和线宽得跟着变，
         # 不然 140% 时字显得特别小、70% 时又糊成一团
         ws = wheel_scale_of(self.cfg)
@@ -4615,7 +4615,7 @@ class PauseToast(QWidget):
         p.setRenderHint(QPainter.TextAntialiasing, True)
         # 和轮盘同款透明度：轮盘「不透明度」调到多少，这条提示就透到多少。
         # 以前这里恒定 240/255，设成 40% 也只是轮盘半透明、提示照样一块实心板。
-        ui_opacity = float(self.cfg.get("opacity", 0.94) or 0.94)
+        ui_opacity = float(self.cfg.get("opacity", 0.5) or 0.5)
         p.setOpacity(max(0.05, min(1.0, alpha * ui_opacity)))
 
         cx, cy = self.width() / 2.0, self.height() / 2.0
@@ -4824,7 +4824,7 @@ class HintToast(QWidget):
         p.setRenderHint(QPainter.Antialiasing, True)
         p.setRenderHint(QPainter.TextAntialiasing, True)
         # 和轮盘/暂停提示共用同一个透明度设置，三处观感一致
-        ui_opacity = float(self.cfg.get("opacity", 0.94) or 0.94)
+        ui_opacity = float(self.cfg.get("opacity", 0.5) or 0.5)
         p.setOpacity(max(0.05, min(1.0, alpha * ui_opacity)))
 
         cx, cy = self.width() / 2.0, self.height() / 2.0
