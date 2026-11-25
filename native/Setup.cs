@@ -424,14 +424,20 @@ internal sealed class RouletteSetup : Form {
         foreach (string link in new[] {
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), ShortcutName),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), ShortcutName) }) {
-            TryDelete(link);
+            // 只删指向本目录的快捷方式：另一个目录里的安装（或便携版）不受影响。
+            if (SamePath(ShortcutTarget(link), exe)) TryDelete(link);
         }
         using (RegistryKey run = Registry.CurrentUser.OpenSubKey(RunKey, true)) {
             string value = run == null ? null : run.GetValue(Product) as string;
             if (value != null && value.Trim('"').Equals(exe, StringComparison.OrdinalIgnoreCase)) run.DeleteValue(Product, false);
         }
-        Registry.CurrentUser.DeleteSubKeyTree(UninstallKey, false);
-        Registry.CurrentUser.DeleteSubKeyTree(InstallKey, false);
+        foreach (string key in new[] { UninstallKey, InstallKey }) {
+            string location;
+            using (RegistryKey record = Registry.CurrentUser.OpenSubKey(key)) {
+                location = record == null ? null : record.GetValue("InstallLocation") as string;
+            }
+            if (location != null && SamePath(location, directory)) Registry.CurrentUser.DeleteSubKeyTree(key, false);
+        }
 
         if (!keepData) {
             for (int attempt = 0; attempt < 20 && Directory.Exists(directory); attempt++) {
@@ -579,6 +585,28 @@ internal sealed class RouletteSetup : Form {
             if (Array.IndexOf(UserData, name) < 0 && !name.StartsWith(".jinkra-update-", StringComparison.Ordinal)) return false;
         }
         return true;
+    }
+
+    private static bool SamePath(string a, string b) {
+        if (String.IsNullOrEmpty(a) || String.IsNullOrEmpty(b)) return false;
+        try {
+            return String.Equals(Path.GetFullPath(a).TrimEnd('\\'), Path.GetFullPath(b).TrimEnd('\\'),
+                                 StringComparison.OrdinalIgnoreCase);
+        } catch (Exception) { return false; }
+    }
+
+    private static string ShortcutTarget(string link) {
+        if (!File.Exists(link)) return null;
+        Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+        object shell = Activator.CreateInstance(shellType);
+        try {
+            object shortcut = shellType.InvokeMember("CreateShortcut", BindingFlags.InvokeMethod, null, shell, new object[] { link });
+            try {
+                return shortcut.GetType().InvokeMember("TargetPath", BindingFlags.GetProperty, null, shortcut, null) as string;
+            } finally { Marshal.FinalReleaseComObject(shortcut); }
+        } catch (Exception) {
+            return null;
+        } finally { Marshal.FinalReleaseComObject(shell); }
     }
 
     private static void CreateShortcut(string link, string target, string workingDirectory) {
