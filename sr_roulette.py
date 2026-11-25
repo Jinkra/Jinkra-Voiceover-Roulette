@@ -168,7 +168,7 @@ import theme
 from theme import accent, accent_dark, accent_light, set_accent
 
 APP_NAME = "Jinkra Voiceover Roulette"
-APP_VERSION = "v1.3.9"
+APP_VERSION = "v1.3.10"
 
 DEBUG = os.environ.get("SR_DEBUG") == "1"
 
@@ -1176,6 +1176,14 @@ class SoundBank(QObject):
         if self.scfg is not None:
             names = [key for key, _p in found]
             order = self.scfg.sync(names)   # 顺带清掉已删除文件留下的配置
+            # 扫描改了布局（新文件上盘、找不到的收进暂存区）就马上存盘。
+            # 以前只有启动那一次会存：程序开着时放进来的音效只排在内存里，
+            # 一重启（比如更新）就按磁盘上的旧 sounds.json 重排，看起来像布局丢了。
+            if self.scfg.dirty:
+                try:
+                    self.scfg.save()
+                except Exception as exc:
+                    _log(f"[sound] 保存 sounds.json 失败: {exc}")
             by_name = dict(found)
             for n in order:
                 if n in by_name:
