@@ -1,4 +1,4 @@
-Jinkra Voiceover Roulette  v1.3.0
+Jinkra Voiceover Roulette  v1.3.1
 Windows 音效轮盘
 改造自迟昼的 SR Voiceover Roulette，沿用 MIT 许可证。
 
