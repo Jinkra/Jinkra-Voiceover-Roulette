@@ -99,17 +99,62 @@ def parse_release(document, current):
     return Release(tag, name, size, digest[7:].lower(), str(document.get("body") or "")[:4000])
 
 
-def check(current):
-    try:
-        with _open(LATEST, hosts=_OFFICIAL, timeout=8, headers={"Accept": "application/vnd.github+json"}) as response:
-            raw = response.read(262145)
-    except urllib.error.HTTPError as error:
-        if error.code == 404:
-            return None
-        raise
+MANIFEST = "latest.json"
+
+
+def manifest(version, asset, size, sha256, notes=""):
+    """随每个版本上传的发布清单。GitHub 接口被限流时，更新检查改读它。"""
+    return {"tag_name": version, "asset": asset, "size": size, "sha256": sha256, "notes": notes}
+
+
+def _check_api(current):
+    with _open(LATEST, hosts=_OFFICIAL, timeout=8, headers={"Accept": "application/vnd.github+json"}) as response:
+        raw = response.read(262145)
     if len(raw) > 262144:
         raise ValueError("官方发布信息过大")
     return parse_release(json.loads(raw), current)
+
+
+def _check_manifest(current):
+    """不走 GitHub 接口：经直连或加速线路读最新发布里的 latest.json。
+
+    未登录的 GitHub 接口每个 IP 每小时只能查 60 次，网吧、校园网等共用出口的用户
+    很容易被拒（HTTP 403 rate limit exceeded）；下载文件不受这个限制。
+    """
+    errors = []
+    for name, prefix in ROUTES:
+        try:
+            with _open(f"{prefix}{RELEASES}/latest/download/{MANIFEST}", hosts=_DOWNLOADS, timeout=8) as response:
+                raw = response.read(65537)
+            if len(raw) > 65536:
+                raise ValueError("发布清单过大")
+            data = json.loads(raw)
+            document = {"tag_name": data.get("tag_name"), "body": data.get("notes", ""), "assets": [{
+                "name": data.get("asset"), "size": data.get("size"),
+                "digest": "sha256:" + str(data.get("sha256", "")),
+            }]}
+            return parse_release(document, current)
+        except (OSError, ValueError, http.client.HTTPException, AttributeError) as error:
+            errors.append(f"{name}：{error}")
+    raise OSError("；".join(errors))
+
+
+def check(current):
+    try:
+        return _check_api(current)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        api_error = error
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        api_error = error
+    try:
+        return _check_manifest(current)
+    except OSError as error:
+        limited = isinstance(api_error, urllib.error.HTTPError) and api_error.code in (403, 429)
+        reason = "GitHub 暂时限制了查询次数" if limited else f"GitHub 接口不可用（{api_error}）"
+        raise OSError(f"{reason}，备用线路也没能读取发布信息。请稍后再试，或点「打开发布页」手动下载。"
+                      f"\n{error}") from error
 
 
 def probe_routes(release, report=lambda *_: None):

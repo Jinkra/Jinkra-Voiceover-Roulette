@@ -12,6 +12,7 @@
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -114,8 +115,18 @@ def main():
         write_zip(payload, app_files(exe) + [(uninstaller, UNINSTALLER)])
         compile_setup(setup, version, staging, [(payload, "payload.zip")])
     write_zip(update_zip, app_files(exe))
+    digests = {}
     for artifact in (setup, update_zip):
-        print(f"{artifact.name}  {artifact.stat().st_size / 1048576:.1f} MB  sha256={sha256(artifact)}")
+        digests[artifact] = sha256(artifact)
+        print(f"{artifact.name}  {artifact.stat().st_size / 1048576:.1f} MB  sha256={digests[artifact]}")
+    # 发布清单：每个版本都上传，名字固定为 latest.json。GitHub 接口被限流时更新检查读它。
+    sys.path.insert(0, str(ROOT))
+    import updates
+    notes = RELEASE / f"notes-v{version}.md"
+    data = updates.manifest(f"v{version}", update_zip.name, update_zip.stat().st_size, digests[update_zip],
+                            notes.read_text(encoding="utf-8")[:4000] if notes.is_file() else "")
+    (RELEASE / updates.MANIFEST).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"{updates.MANIFEST}  -> v{version}")
 
 
 if __name__ == "__main__":

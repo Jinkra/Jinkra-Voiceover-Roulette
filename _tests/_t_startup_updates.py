@@ -51,6 +51,72 @@ class UpdateTests(unittest.TestCase):
             self.assertTrue(any(text and "校验失败" in text for text in seen))
 
 
+class RateLimitTests(unittest.TestCase):
+    """GitHub 接口限流（HTTP 403）时改读发布清单 latest.json。"""
+
+    def setUp(self):
+        self.payload = b"PK-update"
+        self.data = updates.manifest("v1.4.0", updates.filename("v1.4.0"), len(self.payload),
+                                     hashlib.sha256(self.payload).hexdigest(), "说明")
+
+    def limited(self, *args, **kwargs):
+        raise updates.urllib.error.HTTPError(updates.LATEST, 403, "rate limit exceeded", {}, None)
+
+    def test_rate_limited_api_falls_back_to_manifest(self):
+        opened = []
+
+        def fake_open(url, **kwargs):
+            opened.append(url)
+            if url == updates.LATEST:
+                self.limited()
+            return io.BytesIO(updates.json.dumps(self.data).encode())
+
+        with patch.object(updates, "_open", side_effect=fake_open):
+            release = updates.check("v1.3.0")
+        self.assertEqual(release.version, "v1.4.0")
+        self.assertEqual(release.sha256, self.data["sha256"])
+        self.assertTrue(opened[1].endswith("/releases/latest/download/latest.json"))
+
+    def test_manifest_tries_every_route(self):
+        calls = []
+
+        def fake_open(url, **kwargs):
+            calls.append(url)
+            if url == updates.LATEST:
+                self.limited()
+            if not url.startswith(updates.ROUTES[-1][1]):
+                raise OSError("线路不通")
+            return io.BytesIO(updates.json.dumps(self.data).encode())
+
+        with patch.object(updates, "_open", side_effect=fake_open):
+            self.assertEqual(updates.check("v1.3.0").version, "v1.4.0")
+        self.assertEqual(len(calls), 1 + len(updates.ROUTES))
+
+    def test_everything_down_gives_clear_message(self):
+        def fake_open(url, **kwargs):
+            if url == updates.LATEST:
+                self.limited()
+            raise OSError("线路不通")
+
+        with patch.object(updates, "_open", side_effect=fake_open):
+            with self.assertRaises(OSError) as raised:
+                updates.check("v1.3.0")
+        self.assertIn("限制了查询次数", str(raised.exception))
+        self.assertIn("打开发布页", str(raised.exception))
+
+    def test_tampered_manifest_is_rejected(self):
+        bad = dict(self.data, sha256="not-a-digest")
+
+        def fake_open(url, **kwargs):
+            if url == updates.LATEST:
+                self.limited()
+            return io.BytesIO(updates.json.dumps(bad).encode())
+
+        with patch.object(updates, "_open", side_effect=fake_open):
+            with self.assertRaises(OSError):
+                updates.check("v1.3.0")
+
+
 class ActivationTests(unittest.TestCase):
     def test_receipt_belongs_to_version(self):
         code = "test-only-code"
