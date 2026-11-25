@@ -168,7 +168,7 @@ import theme
 from theme import accent, accent_dark, accent_light, set_accent
 
 APP_NAME = "Jinkra Voiceover Roulette"
-APP_VERSION = "v1.3.10"
+APP_VERSION = "v1.3.11"
 
 DEBUG = os.environ.get("SR_DEBUG") == "1"
 
@@ -5927,11 +5927,36 @@ _kernel32.CreateMutexW.restype = wintypes.HANDLE
 _MUTEX = None
 
 
-def acquire_single_instance() -> bool:
-    """只允许开一个实例。否则双击两次会有两个进程同时读键，音效播两遍。"""
+def launched_by_updater() -> bool:
+    """是不是更新程序刚把我启动起来（旧版可能还在退出）。
+
+    新版更新程序会带 --after-update；v1.3.10 及更早的更新程序不带参数，
+    只能看安装目录里有没有它正在用的 .jinkra-update-*/apply-update.exe。
+    """
+    if "--after-update" in sys.argv[1:]:
+        return True
+    try:
+        return any(BASE_DIR.glob(".jinkra-update-*/apply-update.exe"))
+    except OSError:
+        return False
+
+
+def acquire_single_instance(wait: float = 0.0) -> bool:
+    """只允许开一个实例。否则双击两次会有两个进程同时读键，音效播两遍。
+
+    wait > 0 时（更新程序启动的新版），旧版可能还在退出，先等它放开锁再判断。
+    """
     global _MUTEX
-    _MUTEX = _kernel32.CreateMutexW(None, False, "Local\\JinkraVoiceoverRoulette")
-    return ctypes.get_last_error() != 183  # ERROR_ALREADY_EXISTS
+    deadline = time.monotonic() + wait
+    while True:
+        _MUTEX = _kernel32.CreateMutexW(None, False, "Local\\JinkraVoiceoverRoulette")
+        if ctypes.get_last_error() != 183:  # ERROR_ALREADY_EXISTS
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        ctypes.windll.kernel32.CloseHandle(_MUTEX)
+        _MUTEX = None
+        time.sleep(0.3)
 
 
 def clean_update_leftovers() -> None:
@@ -5974,7 +5999,7 @@ def sync_install_record() -> None:
 
 
 def main() -> int:
-    if not acquire_single_instance():
+    if not acquire_single_instance(15.0 if launched_by_updater() else 0.0):
         ctypes.windll.user32.MessageBoxW(
             None,
             f"{APP_NAME} 已经在运行，请查看右下角的托盘图标。",

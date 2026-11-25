@@ -25,10 +25,14 @@ internal static class JinkraUpdater
 
         try
         {
+            // Windows 允许替换正在运行的 EXE，所以不能靠「替换成功」判断旧版已退出：
+            // 先等旧版（单文件 EXE 的启动器和主程序两个进程）全部退出，再替换并启动新版，
+            // 否则新版会撞上旧版还没释放的单实例锁，弹出「已经在运行」后退出。
+            WaitForOldCopies(current);
             ReplaceWhenClosed(staged, current, backup);
             try
             {
-                using (var process = Process.Start(new ProcessStartInfo(current) {
+                using (var process = Process.Start(new ProcessStartInfo(current, "--after-update") {
                     WorkingDirectory = Path.GetDirectoryName(current),
                     UseShellExecute = true
                 }))
@@ -53,6 +57,50 @@ internal static class JinkraUpdater
                             "Jinkra 更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return 1;
         }
+    }
+
+    private static void WaitForOldCopies(string exe)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        while (true)
+        {
+            var running = RunningCopies(exe);
+            if (running.Length == 0)
+                return;
+            if (DateTime.UtcNow > deadline)
+            {
+                // 旧版迟迟不退：结束它。设置和音效都是随改随存的。
+                foreach (var process in running)
+                {
+                    try { process.Kill(); process.WaitForExit(5000); }
+                    catch (Exception) { }
+                }
+                Thread.Sleep(500);
+                if (RunningCopies(exe).Length != 0)
+                    throw new IOException("旧版程序没有退出，请在托盘图标右键选择「退出」后重新更新。");
+                return;
+            }
+            foreach (var process in running)
+                process.Dispose();
+            Thread.Sleep(200);
+        }
+    }
+
+    private static Process[] RunningCopies(string exe)
+    {
+        var self = Process.GetCurrentProcess().Id;
+        var found = new System.Collections.Generic.List<Process>();
+        foreach (var process in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(exe)))
+        {
+            string path = null;
+            try { if (process.Id != self) path = process.MainModule.FileName; }
+            catch (Exception) { }
+            if (path != null && String.Equals(Path.GetFullPath(path), exe, StringComparison.OrdinalIgnoreCase))
+                found.Add(process);
+            else
+                process.Dispose();
+        }
+        return found.ToArray();
     }
 
     private static void ReplaceWhenClosed(string source, string target, string backup)
