@@ -43,6 +43,7 @@ desktop.ini
 .jinkra-activation.activation-tmp
 .jinkra-update-*/
 VirtualMic/
+models/
 
 # 本地音效，公开仓库仅收录合成样例
 sounds/*

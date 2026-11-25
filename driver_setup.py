@@ -1,8 +1,9 @@
 """一键安装虚拟麦克风，并跟踪 Windows 安装程序的结果。
 
 默认安装 VB-Audio 的 VB-CABLE：它带微软签名，开着 Secure Boot 的 Windows 也能直接加载。
-EXE 内原样附带官方驱动包（不做任何修改），点击后在本地解压，并以管理员身份打开
-VB-Audio 自己的安装窗口。若构建内附带了微软签回的 Jinkra 驱动，则优先安装 Jinkra 驱动。
+EXE 内原样附带官方驱动包（不做任何修改），点击后在本地解压，以管理员身份用安装程序
+自带的静默参数（-i -h）安装：不弹 VB-CABLE 窗口、不打开网站、不弹完成提示。
+若构建内附带了微软签回的 Jinkra 驱动，则优先安装 Jinkra 驱动。
 """
 
 import ctypes
@@ -156,9 +157,12 @@ def _start_install(helper, package, owner):
     return _run_elevated(helper.resolve(), subprocess.list2cmdline(["install", str(package)]), owner, 0)
 
 
+VB_CABLE_SILENT = "-i -h"  # -i 安装，-h 隐藏界面
+
+
 def _start_vb_cable(setup, owner):
-    """以管理员身份打开 VB-Audio 自己的安装窗口，由用户在其中确认安装。"""
-    return _run_elevated(setup.resolve(), "", owner, 1)
+    """以管理员身份静默运行 VB-CABLE 安装程序。"""
+    return _run_elevated(setup.resolve(), VB_CABLE_SILENT, owner, 0)
 
 
 class DriverInstallation(QObject):
@@ -211,9 +215,8 @@ class DriverInstallation(QObject):
             return "点击安装并确认 Windows 提示，完成后自动启用送声。"
         if sys.platform != "win32":
             return "虚拟麦克风仅支持 Windows。"
-        return ("点击「安装虚拟麦克风」，确认 Windows 管理员提示，再在 VB-CABLE 窗口中点击"
-                "「Install Driver」，看到安装成功的提示后点「确定」。"
-                "VB-CABLE 由 VB-Audio 提供（捐赠软件，vb-cable.com）。")
+        return ("点击「安装虚拟麦克风」并确认 Windows 管理员提示，之后全自动完成，装好后自动启用送声。"
+                "虚拟麦克风使用 VB-Audio 的 VB-CABLE（捐赠软件，vb-cable.com）。")
 
     # ---- 安装 ----
     def install(self, parent):
@@ -253,7 +256,7 @@ class DriverInstallation(QObject):
             self._stage = Path(tempfile.mkdtemp(prefix="jinkra-vbcable-"))
         setup = _extract_pack(pack, self._stage / "VBCABLE")
         self.process = _start_vb_cable(setup, int(self._owner.winId()) if self._owner else 0)
-        self.message = ("请在 VB-CABLE 窗口中点击「Install Driver」。弹出 “Installation Complete and Successful” 是安装成功的提示，点「确定」后关闭 VB-CABLE 窗口即可，一般不需要重启。")
+        self.message = "正在自动安装虚拟麦克风，约需十几秒，请稍候。"
 
     def _poll(self):
         try:
@@ -288,8 +291,7 @@ class DriverInstallation(QObject):
                     self._finish(True, "虚拟麦克风已安装，已自动启用送声。")
                 elif time.monotonic() - self._waiting_since > ENDPOINT_WAIT:
                     self._finish(False, "安装窗口已关闭，但 Windows 还没有出现虚拟麦克风。"
-                                        "如果已看到 VB-CABLE 的安装成功提示，请按它的建议重启电脑后再打开"
-                                        f" {APP_NAME}；否则请重新点击安装。")
+                                        f"请重启电脑后再打开 {APP_NAME}；仍然没有的话再点一次安装。")
         except Exception as error:  # 下载、解压或读取进程状态失败
             self._fail(str(error) or "虚拟麦克风安装失败，请重试。")
 

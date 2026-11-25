@@ -83,6 +83,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 import numpy as np
+import denoise
 from audio_routes import (JINKRA, MIC_ENDPOINT, MIX_ENDPOINT, VB_CABLE, is_jinkra_endpoint,
                           route_of, unique_endpoint)
 from ui_chrome import ButtonFeedback, branded_menu
@@ -1013,7 +1014,8 @@ DEFAULT_CONFIG = {
     "mic_gain": 0.9,          # 你自己的原声送给对方多响
     "cable_effect_gain": 1.0,  # 音效送给对方多响
     "monitor_enabled": True,  # 音效是否也从自己耳机里放出来
-    "mic_latency_ms": 60,     # 麦克风缓冲留多少余量，太小吃时钟漂移、太大手慢
+    "mic_latency_ms": 60,
+    "mic_denoise": False,     # AI 降噪（RNNoise），需先在「语音输出」里安装降噪模型     # 麦克风缓冲留多少余量，太小吃时钟漂移、太大手慢
 }
 
 # 老版本没有这些手感参数，混用会让"手感差"的问题继续存在，所以只继承用户真正在意的项
@@ -2045,6 +2047,24 @@ class MicCapture:
         self._raw_tail = b""     # 上次剩下不满一帧的字节，留到下次一起解
         self._rs_pos = 0.0       # 重采样：下一帧要取的位置（相对 _rs_buf）
         self._rs_buf: np.ndarray | None = None
+        self.denoiser = None     # denoise.Denoiser；只在 48kHz 下启用
+        self.denoise_error = ""
+
+    def set_denoise(self, enabled: bool) -> None:
+        """开关 AI 降噪。模型没装或采样率不是 48kHz 时保持原声，并记下原因。"""
+        if not enabled:
+            self.denoiser, self.denoise_error = None, ""
+            return
+        if self.denoiser is not None:
+            return
+        if self.rate != denoise.SAMPLE_RATE:
+            self.denoise_error = f"AI 降噪需要 48kHz 输出，当前为 {self.rate}Hz"
+            return
+        try:
+            self.denoiser = denoise.Denoiser(BASE_DIR)
+            self.denoise_error = ""
+        except OSError as exc:
+            self.denoise_error = str(exc)
 
     # ---- 格式适配 ----
     def _decode(self, raw: bytes) -> np.ndarray | None:
@@ -2135,6 +2155,8 @@ class MicCapture:
             return 0
         arr = self._map_channels(arr)
         arr = self._resample(arr)
+        if self.denoiser is not None and len(arr):
+            arr = self.denoiser.process(arr)
         if len(arr) == 0:
             return 0
         self._buf = arr if len(self._buf) == 0 else np.concatenate([self._buf, arr])
@@ -2190,6 +2212,8 @@ class MicCapture:
         self._raw_tail = b""
         self._rs_pos = 0.0
         self._rs_buf = None
+        if self.denoiser is not None:
+            self.denoiser.reset()
 
 
 class Mixer(QIODevice):
@@ -2746,6 +2770,7 @@ class AudioEngine(QObject):
     def _install_capture(self, dev, fmt: QAudioFormat, cap: MicCapture, src, io) -> None:
         """把开好的采集接上定时泵。"""
         self.capture = cap
+        cap.set_denoise(bool(self.cfg.get("mic_denoise", False)))
         self._source = src
         self._src_io = io
         self._mic_name = dev.description()
@@ -2967,6 +2992,8 @@ class AudioEngine(QObject):
                 0,
                 int(self.fmt.sampleRate() * float(self.cfg.get("mic_latency_ms", 60)) / 1000.0),
             )
+        if self.capture is not None:
+            self.capture.set_denoise(bool(self.cfg.get("mic_denoise", False)))
 
     # ---- 播放 ----
     def set_volume(self, volume: float) -> None:
@@ -2990,6 +3017,8 @@ class AudioEngine(QObject):
             "error": self.mic_error,
             "cable_error": self.cable_error,
             "note": self.mic_note,
+            "denoise": self.capture is not None and self.capture.denoiser is not None,
+            "denoise_error": self.capture.denoise_error if self.capture else "",
             "underruns": self.capture.underruns if self.capture else 0,
             "dropped": self.capture.dropped if self.capture else 0,
         }

@@ -59,10 +59,14 @@
 启动向导和「语音输出」页都有「安装虚拟麦克风」按钮：
 
 1. 点击按钮，确认 Windows 管理员提示。
-2. 在弹出的 VB-CABLE 窗口点「Install Driver」。看到 “Installation Complete and Successful” 即为安装成功，点「确定」并关闭窗口；它建议重启，但通常不重启也能直接使用。
+2. 之后全自动安装：用 VB-CABLE 安装程序自带的静默参数（`-i -h`），不弹它的窗口、不打开网站。通常不用重启。
 3. 程序识别到 `CABLE Input` / `CABLE Output` 后自动启用混音送声。在游戏或语音软件里把输入设备选为 **CABLE Output**。
 
-虚拟声卡使用 VB-Audio 的 [VB-CABLE](https://vb-audio.com/Cable/)：它带微软签名，开着 Secure Boot 的 Windows 10/11 也能直接加载。打包时会把官方驱动包 `VBCABLE_Driver_Pack46.zip` 原样（校验 SHA-256，不做任何修改）嵌入 EXE，国内用户不需要再连 VB-Audio 官网下载；安装时打开的是 VB-Audio 自己的安装窗口。VB-CABLE 是捐赠软件，版权归 VB-Audio 所有。
+虚拟声卡使用 VB-Audio 的 [VB-CABLE](https://vb-audio.com/Cable/)：它带微软签名，开着 Secure Boot 的 Windows 10/11 也能直接加载。打包时会把官方驱动包 `VBCABLE_Driver_Pack46.zip` 原样（校验 SHA-256，不做任何修改）嵌入 EXE，国内用户不需要再连 VB-Audio 官网下载。VB-CABLE 是捐赠软件，版权归 VB-Audio 所有。它的许可要求“未经作者同意，不得集成进其他软件的安装流程”，正式大规模分发前建议向 VB-Audio 取得书面许可。
+
+### AI 降噪
+
+「语音输出」页的「AI 降噪」使用 [RNNoise](https://github.com/xiph/rnnoise)（BSD-3）。模型和推理库在 [pyrnnoise](https://github.com/pengzhendong/pyrnnoise)（Apache-2.0）的 Windows 包里，用户点「安装降噪模型」时才下载（约 13 MB），依次尝试清华、阿里云 PyPI 镜像和官方 PyPI，并用固定的 SHA-256 校验，存放在安装目录的 `models/rnnoise`。
 
 仓库里还保留了自研驱动 [Jinkra Virtual Mic](native/virtual-mic/README.md) 的工程。只有取得微软签名后它才能在普通电脑上加载；构建内附带签回的驱动时，程序会优先安装它。
 

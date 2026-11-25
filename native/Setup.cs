@@ -31,7 +31,7 @@ internal sealed class RouletteSetup : Form {
     // 用户数据与程序放在同一目录（便携布局），卸载时按「保留用户数据」决定是否删除。
     private static readonly string[] UserData = {
         "config.json", "sounds.json", "sounds.json.bak", "sounds.json.tmp", "sounds",
-        ".jinkra-activation", "jinkra_roulette.log",
+        ".jinkra-activation", "jinkra_roulette.log", "models",
     };
 
     private const int BrandWidth = 258;
@@ -113,7 +113,7 @@ internal sealed class RouletteSetup : Form {
         desktopShortcut = PlaceChoice("创建桌面快捷方式", 262, true);
         launchAfter = PlaceChoice("安装完成后打开 Jinkra Voiceover Roulette", 291, true);
         browse.Visible = desktopShortcut.Visible = launchAfter.Visible = !removing;
-        keepData = PlaceChoice("保留用户数据（设置、音效和激活记录）", 262, true);
+        keepData = PlaceChoice("保留用户数据（设置、音效、降噪模型和激活记录）", 262, true);
         keepData.Visible = removing;
         status = PlaceLabel(removing ? "保留设置、音效和激活记录，重新安装到同一目录即可继续使用。"
                                      : "仅为当前 Windows 用户安装，不需要管理员权限。",

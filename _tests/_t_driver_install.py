@@ -130,7 +130,7 @@ class DriverInstallTests(unittest.TestCase):
         page = MicPage(self.cfg, None)
         self.addCleanup(page.close)
         self.assertTrue(page.btn_install.isEnabled())
-        self.assertIn("Install Driver", page.lbl_status.text())
+        self.assertIn("全自动", page.lbl_status.text())
         process = Mock()
         process.result.side_effect = [None, 1]
         with patch.object(driver_setup, "_download_pack") as download, \
@@ -138,6 +138,7 @@ class DriverInstallTests(unittest.TestCase):
             page.btn_install.click()
         download.assert_not_called()
         setup = launch.call_args.args[0]
+        self.assertEqual(driver_setup.VB_CABLE_SILENT, "-i -h")
         self.assertEqual(setup.name, driver_setup.VB_CABLE_SETUP)
         self.assertEqual(setup.read_bytes(), b"setup")
         self.assertFalse(page.btn_install.isEnabled())

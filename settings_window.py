@@ -77,6 +77,7 @@ from PySide6.QtWidgets import (
 
 import sr_roulette as sr
 import driver_setup
+import denoise
 from audio_routes import MIC_ENDPOINT
 from ui_chrome import Dropdown, branded_menu, motion_allowed
 from ui_chrome import DoubleSpinBox as QDoubleSpinBox
@@ -3871,6 +3872,28 @@ class MicPage(QWidget):
         lay2.addWidget(_row("缓冲余量", self.latency))
         levels.addWidget(card2)
 
+        # ---- AI 降噪 ----
+        card4, lay4 = _card("AI 降噪")
+        hint4 = _WrapLabel("用 RNNoise 神经网络滤掉键盘、风扇、空调等背景噪音，只把人声送给队友。")
+        hint4.setObjectName("Hint")
+        lay4.addWidget(hint4)
+        self.chk_denoise = QCheckBox("启用 AI 降噪")
+        self.chk_denoise.setChecked(bool(cfg.get("mic_denoise", False)))
+        lay4.addWidget(self.chk_denoise)
+        row4 = QHBoxLayout()
+        self.btn_denoise = QPushButton("安装降噪模型")
+        self.btn_denoise.clicked.connect(self._install_denoise)
+        row4.addWidget(self.btn_denoise)
+        row4.addStretch(1)
+        lay4.addLayout(row4)
+        self.lbl_denoise = _WrapLabel("")
+        self.lbl_denoise.setObjectName("RouteStatus")
+        lay4.addWidget(self.lbl_denoise)
+        levels.addWidget(card4)
+        self.denoise_installer = denoise.ModelInstaller(sr.BASE_DIR)
+        self._denoise_timer = QTimer(self, interval=250)
+        self._denoise_timer.timeout.connect(self._poll_denoise)
+
         # ---- 说话测试 ----
         card3, lay3 = _card("说话测试")
         h = _WrapLabel("点击「开始测试」后说话，电平条移动表示 Jinkra 已收到你的声音。")
@@ -3898,6 +3921,7 @@ class MicPage(QWidget):
         # ---- 事件 ----
         self.chk_enable.toggled.connect(self._push)
         self.chk_monitor.toggled.connect(self._push)
+        self.chk_denoise.toggled.connect(self._push)
         self.cmb_mic.currentIndexChanged.connect(self._on_device_changed)
         self.btn_test.clicked.connect(self._toggle_test)
         for w in (self.snd_gain, self.mic_gain, self.mon_gain, self.latency):
@@ -4000,11 +4024,54 @@ class MicPage(QWidget):
         message = "\n".join(lines)
         if message != self.lbl_status.text():
             self.lbl_status.setText(message)
+        self._refresh_denoise()
 
     def _on_device_changed(self) -> None:
         self._push()
 
     # ---- 说话测试 ----
+    # ---- AI 降噪 ----
+    def _install_denoise(self) -> None:
+        self.denoise_installer.start()
+        self._denoise_timer.start()
+        self._refresh_denoise()
+
+    def _poll_denoise(self) -> None:
+        done = self.denoise_installer.finished()
+        if done is None:
+            self._refresh_denoise()
+            return
+        self._denoise_timer.stop()
+        if done:
+            self.chk_denoise.setChecked(True)  # 触发 _push，引擎就地启用降噪
+        self._refresh_denoise()
+
+    def _refresh_denoise(self) -> None:
+        ready = denoise.installed(sr.BASE_DIR)
+        busy = self.denoise_installer.busy
+        self.chk_denoise.setEnabled(ready or self.chk_denoise.isChecked())
+        self.btn_denoise.setVisible(not ready or busy)
+        self.btn_denoise.setEnabled(not busy)
+        if busy:
+            route = self.denoise_installer.route
+            self.btn_denoise.setText(f"正在下载 {self.denoise_installer.percent}%")
+            text = f"正在从{route}下载降噪模型（约 13 MB）。" if route else "正在连接下载线路…"
+        elif not ready:
+            self.btn_denoise.setText("安装降噪模型")
+            text = self.denoise_installer.error or "首次使用需下载降噪模型（约 13 MB），安装后无需联网。"
+        else:
+            status = self.engine.audio_status() if self.engine is not None else {}
+            if not self.chk_denoise.isChecked():
+                text = "降噪模型已安装。勾选上方开关即可启用。"
+            elif status.get("denoise_error"):
+                text = str(status["denoise_error"])
+            elif status.get("denoise"):
+                text = "AI 降噪已生效，可点「开始测试」对着麦克风说话试听电平。"
+            else:
+                text = "已启用。开启送声或说话测试时生效。"
+        if text != self.lbl_denoise.text():
+            self.lbl_denoise.setText(text)
+
     def _toggle_test(self) -> None:
         if self._timer.isActive():
             self._timer.stop()
@@ -4044,6 +4111,7 @@ class MicPage(QWidget):
         self.cfg["mic_gain"] = self.mic_gain.slider.value() / 100.0
         self.cfg["volume"] = self.mon_gain.slider.value() / 100.0
         self.cfg["mic_latency_ms"] = int(self.latency.slider.value())
+        self.cfg["mic_denoise"] = bool(self.chk_denoise.isChecked())
         self.changed.emit()
         self._refresh_status()
 
@@ -4507,7 +4575,7 @@ class HelpPage(QWidget):
             ),
             (
                 "Q5 游戏里没有虚拟麦克风（CABLE Output）？",
-                "打开「语音输出」并点击「重新检测」。若还没装，点「安装虚拟麦克风」并在 VB-CABLE 窗口点「Install Driver」，必要时重启电脑。"
+                "打开「语音输出」并点击「重新检测」。若还没装，点「安装虚拟麦克风」并确认管理员提示，会自动装好，必要时重启电脑。"
                 "安装完成后，可重启语音软件刷新录音设备列表。",
             ),
             (
