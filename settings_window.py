@@ -1,0 +1,6527 @@
+"""配置窗口：左边多层标签页，右边可视化轮盘。
+
+浅色控制台与深蓝轮盘预览共用一套主题色。
+"""
+
+from __future__ import annotations
+
+import ctypes
+import ctypes.wintypes
+import json
+import math
+import os
+from dataclasses import asdict
+from pathlib import Path
+
+from PySide6.QtCore import (
+    QEvent,
+    QMimeData,
+    QPropertyAnimation,
+    QEasingCurve,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    QUrl,
+    Signal,
+)
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QDrag,
+    QDesktopServices,
+    QFont,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+    QShortcut,
+)
+from PySide6.QtMultimedia import QMediaDevices
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QBoxLayout,
+    QButtonGroup,
+    QCheckBox,
+    QColorDialog,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+import sr_roulette as sr
+import driver_setup
+from audio_routes import MIC_ENDPOINT
+from ui_chrome import branded_menu, motion_allowed
+from welcome import reveal
+from sounds_config import (
+    CM_ACC,
+    CM_RAND,
+    CM_SEQ,
+    CM_STEP,
+    COMBO_MODE_LABEL,
+    COMBO_MODE_TIP,
+    COMBO_MODES,
+    COMBO_PREFIX,
+    ComboDef,
+    ComboItem,
+    DELAY_MAX_MS,
+    DELAY_MIN_MS,
+    MAX_COMBO_ITEMS,
+    PITCH_FIXED,
+    PITCH_MODE_LABEL,
+    PITCH_MODES,
+    PITCH_NONE,
+    PITCH_RANDOM,
+    REPEAT_MS_MAX,
+    REPEAT_MS_MIN,
+    SPEED_MODE_LABEL,
+    SPEED_MODES,
+    SPEED_NONE,
+    STOP_KEYS_MAX,
+    TRIG_COMBO,
+    TRIG_LABEL,
+    TRIG_PREV_END,
+    TRIGS,
+    TRIGGER_HOLD,
+    TRIGGER_MODE_LABEL,
+    TRIGGER_MODE_TIP,
+    TRIGGER_MODES,
+    TRIGGER_REPEAT,
+    UNLOCK_COUNT_MAX,
+    UNLOCK_KEY,
+    UNLOCK_MODE_LABEL,
+    UNLOCK_MODES,
+    UNLOCK_MS_MAX,
+    is_combo_key,
+)
+import theme
+from theme import accent, accent_dark, accent_light
+
+UI_FONT = "Microsoft YaHei UI"
+
+# 拖放的数据类型：从音效库拖出来 vs 轮盘内部拖动
+MIME_LIB = "application/x-sr-lib"     # 数据 = 文件名
+MIME_SLOT = "application/x-sr-slot"   # 数据 = 槽位号（0~7 内圈 / 8~19 外圈位置）
+# 拖放落点用 -1 表示"丢到中心 = 追加到末尾"（0 及以上的整数是格子下标）
+ADD_TO_END = -1
+
+# ---------------------------------------------------------------- 样式
+
+def accent_hex() -> str:
+    """当前主题色的十六进制值。每次取值都现算，换色后才能跟着变。"""
+    return theme.accent_hex()
+
+
+def accent_dim() -> str:
+    return theme.accent_dim_hex()
+
+
+def build_qss() -> str:
+    """按当前主题色生成整窗样式表。
+
+    做成函数而不是常量：主题色可以自由调，改完重设一次样式表，
+    滑块、选中态、按钮这些全都跟着换，不用一个个控件去改。
+    """
+    ACCENT_HEX = accent_hex()
+    ACCENT_DIM = accent_dim()
+    # 主题色当底色时，字用深色还是白色得看底色亮不亮（绿色底配白字几乎看不清）
+    ACCENT_ON = "#102f46" if theme.is_light(theme.ACCENT_RGB, 112) else "#ffffff"
+    ACCENT_LIGHT = theme.rgb_to_hex(theme.ACCENT_LIGHT_RGB)
+    return f"""
+* {{
+    font-family: "{UI_FONT}";
+    outline: none;
+}}
+QWidget#Root {{
+    background: #f2f2ed;
+    border: 1px solid #dedfd6;
+    border-radius: 12px;
+}}
+QWidget#TitleBar {{
+    background: #222725;
+    border-bottom: 1px solid #dedfd6;
+    border-top-left-radius: 12px;
+    border-top-right-radius: 12px;
+}}
+QLabel {{
+    color: #282f2a;
+    background: transparent;
+}}
+QLabel#AppTitle {{
+    font-family: "Segoe UI";
+    font-size: 14px;
+    font-weight: 700;
+    color: #f2f1e7;
+}}
+QFrame#Navigation {{
+    background: #e9eae1;
+    border: 1px solid #dadcd1;
+    border-radius: 9px;
+}}
+QPushButton#NavItem {{
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    color: #45534a;
+    border-radius: 6px;
+    padding: 6px 12px;
+    min-height: 18px;
+    font-size: 13px;
+    font-weight: 600;
+}}
+QPushButton#NavItem:hover {{ background: #e1e9dd; }}
+QPushButton#NavItem:checked {{
+    background: #ffffff;
+    border-color: #c7d6c8;
+    color: #1e5343;
+}}
+QPushButton#NavItem:pressed {{ background: #d1e1d4; }}
+QPushButton#NavItem:focus {{ border-color: #5a947d; }}
+QFrame#Transport {{
+    background: #e8eadf;
+    border: 1px solid #d8ddd0;
+    border-radius: 8px;
+}}
+QLabel#TransportStatus {{ color: #40594b; font-size: 12px; font-weight: 600; }}
+QLabel#EndpointName {{ color: #26594d; font-family: "Segoe UI"; font-weight: 700; }}
+QLabel#PageTitle {{
+    font-size: 28px;
+    font-weight: 700;
+    color: #202822;
+}}
+QLabel#ShortcutHint {{
+    background: #e5eee5;
+    color: #34594d;
+    border: 1px solid #d5e3d7;
+    border-radius: 7px;
+    padding: 6px 10px;
+    font-size: 12px;
+}}
+QLabel#AppVersion {{
+    font-family: "Consolas";
+    font-size: 11px;
+    color: #586960;
+    padding-left: 10px;
+}}
+QLabel#RouteStatus {{
+    color: #173f52;
+    font-size: 12px;
+    background: #e6eee5;
+    border-radius: 7px;
+    padding: 10px;
+}}
+QProgressBar#MicMeter {{ background: #dedfd6; border: none; border-radius: 5px; }}
+QProgressBar#MicMeter::chunk {{ background: {ACCENT_HEX}; border-radius: 5px; }}
+QLabel#Hint {{
+    font-size: 11px;
+    color: #59675e;
+}}
+QLabel#SectionLabel {{
+    font-size: 12px;
+    font-weight: 600;
+    color: #3a4940;
+}}
+QLabel#CardTitle {{
+    font-size: 15px;
+    font-weight: 700;
+    color: #252e28;
+}}
+
+QPushButton#FoldHead {{
+    text-align: left;
+    background: #ffffff;
+    border: 1px solid #dedfd6;
+    border-radius: 10px;
+    padding: 9px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #282f2a;
+}}
+QPushButton#FoldHead:hover {{
+    background: #e9f0e7;
+    border-color: #a8bfb0;
+}}
+QPushButton#FoldHead:checked {{
+    color: #1c2622;
+    border-bottom-left-radius: 0px;
+    border-bottom-right-radius: 0px;
+}}
+/* 重点那一节（常见问题）用应用主题色标出来，一眼能找到 */
+QPushButton#FoldHead[hot="true"] {{
+    background: {ACCENT_HEX};
+    border-color: {ACCENT_HEX};
+    color: {ACCENT_ON};
+    font-size: 13px;
+}}
+QPushButton#FoldHead[hot="true"]:hover {{
+    background: {ACCENT_LIGHT};
+    border-color: {ACCENT_LIGHT};
+    color: {ACCENT_ON};
+}}
+QPushButton#FoldHead[hot="true"]:checked {{
+    background: {ACCENT_HEX};
+    border-color: {ACCENT_HEX};
+    color: {ACCENT_ON};
+}}
+QFrame#FoldBody[hot="true"] {{
+    border-color: {ACCENT_HEX};
+}}
+QFrame#FoldBody {{
+    background: #f7f7f1;
+    border: 1px solid #dedfd6;
+    border-top: none;
+    border-bottom-left-radius: 10px;
+    border-bottom-right-radius: 10px;
+}}
+QLabel#DocHead {{
+    font-size: 12px;
+    font-weight: 600;
+    color: #193c52;
+}}
+QLabel#DocText {{
+    font-size: 12px;
+    color: #48554c;
+}}
+
+QFrame#Card {{
+    background: #ffffff;
+    border: 1px solid #dedfd6;
+    border-radius: 12px;
+}}
+QFrame#WheelStage {{
+    background: #212623;
+    border: 1px solid #181c1a;
+    border-radius: 11px;
+}}
+QFrame#WheelStage QLabel#SectionLabel {{ color: #ffffff; font-size: 14px; }}
+QFrame#WheelStage QLabel#Hint, QLabel#StageHint {{ color: #b5c7b8; font-size: 11px; }}
+/* ---- 首次启动那张提示卡（盖在设置窗口上的浮层） ---- */
+QWidget#TipMask {{
+    background: rgba(8, 10, 14, 190);
+}}
+QFrame#TipCard {{
+    background: #ffffff;
+    border: 1px solid {ACCENT_HEX};
+    border-radius: 12px;
+}}
+QLabel#TipTitle {{
+    font-size: 15px;
+    font-weight: 600;
+    color: {ACCENT_HEX};
+}}
+QLabel#TipText {{
+    font-size: 12px;
+    color: #48554c;
+}}
+QFrame#Cell {{
+    background: #f8f8f2;
+    border: 1px solid #dedfd6;
+    border-radius: 9px;
+}}
+QFrame#Cell[assigned="true"] {{ background: #f0f3eb; }}
+QFrame#Cell:hover {{
+    border: 1px solid {ACCENT_HEX};
+    background: #e3ede3;
+}}
+QLabel#TrackGlyph {{
+    background: #e6ece3;
+    border-radius: 8px;
+}}
+QLabel#TrackName {{ font-size: 13px; font-weight: 600; color: #27312c; }}
+QLabel#TrackState {{ color: #32655e; font-size: 11px; }}
+QWidget#Library {{ background: #ffffff; border: 1px solid #dedfd6; border-radius: 13px; }}
+QFrame#Divider {{
+    background: #dedfd6;
+    border: none;
+    max-height: 1px;
+    min-height: 1px;
+}}
+
+QTabWidget::pane {{ border: none; }}
+
+QPushButton {{
+    background: #f4f5ee;
+    color: #193c52;
+    border: 1px solid #d4d8cd;
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 12px;
+}}
+QPushButton:hover {{
+    background: #e9f0e7;
+    border-color: #9fb6a9;
+}}
+QPushButton#Primary {{
+    background: {ACCENT_HEX};
+    color: {ACCENT_ON};
+    border: none;
+    font-weight: 600;
+}}
+QPushButton:pressed {{ background: #dce8dd; border-color: #91a89a; }}
+QPushButton:disabled {{ color: #818982; background: #eceee8; }}
+QPushButton#Primary:hover {{ background: {ACCENT_LIGHT}; color: #1c2622; }}
+QPushButton#Primary:pressed {{ background: {ACCENT_DIM}; color: #ffffff; }}
+QPushButton#Primary:disabled {{ background: #e3e7dd; color: #78837a; }}
+QPushButton:focus, QToolButton:focus, QCheckBox:focus, QRadioButton:focus, QSlider:focus, QTabBar::tab:focus {{ border: 1px solid {ACCENT_HEX}; }}
+QPushButton#WinBtn {{
+    background: transparent;
+    border: none;
+    color: #e6ede5;
+    padding: 0px;
+    border-radius: 6px;
+    font-size: 14px;
+}}
+QPushButton#WinBtn:hover {{ background: #3c4941; color: #ffffff; }}
+QPushButton#WinBtn:pressed {{ background: #4a5c51; }}
+QPushButton#WinBtn:focus {{ border: 1px solid #80b4a1; }}
+QPushButton#KeyClear {{
+    background: transparent;
+    border: none;
+    color: #456375;
+    padding: 0px;
+    border-radius: 6px;
+    font-size: 12px;
+}}
+QPushButton#KeyClear:hover {{
+    background: #ffe8ea;
+    color: #a42f47;
+}}
+QPushButton#KeyClear:disabled {{
+    color: #879b90;
+}}
+/* 「＋」：跟清除键同一套，但悬停是加号该有的"能点"的感觉 */
+QPushButton#KeyAdd {{
+    background: transparent;
+    border: 1px solid #d6d9cf;
+    color: #456375;
+    padding: 0px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+}}
+QPushButton#KeyAdd:hover {{
+    border-color: #e3c88f;
+    background: #fff4de;
+    color: #795515;
+}}
+QPushButton#KeyAdd:disabled {{
+    border-color: #e2e4dc;
+    color: #879b90;
+}}
+
+/* QDoubleSpinBox 必须单独列出来：不写它就退回系统默认的浅色样式，
+   在深色表格里就是一块刺眼的白（变调那一列踩过这个坑） */
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
+    background: #f7f7f1;
+    border: 1px solid #d6d9cf;
+    border-radius: 7px;
+    padding: 5px 9px;
+    color: #282f2a;
+    font-size: 12px;
+    selection-background-color: {ACCENT_DIM};
+}}
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
+    border: 1px solid {ACCENT_HEX};
+}}
+QComboBox::drop-down {{ border: none; width: 20px; }}
+QComboBox QAbstractItemView {{
+    background: #ffffff;
+    border: 1px solid #d6d9cf;
+    color: #282f2a;
+    selection-background-color: {ACCENT_DIM};
+    outline: none;
+}}
+
+QSlider::groove:horizontal {{
+    height: 4px;
+    background: #d6d9cf;
+    border-radius: 2px;
+}}
+QSlider::sub-page:horizontal {{
+    background: {ACCENT_HEX};
+    border-radius: 2px;
+}}
+QSlider::handle:horizontal {{
+    width: 13px;
+    height: 13px;
+    margin: -5px 0;
+    border-radius: 7px;
+    background: #ffffff;
+    border: 2px solid {ACCENT_HEX};
+}}
+
+QCheckBox {{
+    color: #3a4940;
+    font-size: 12px;
+    spacing: 8px;
+}}
+QCheckBox#GlobalChk {{
+    color: #3a4940;
+    font-size: 11px;
+    spacing: 4px;
+}}
+
+/* 滚动区、它的 viewport 和里面那层 holder 都必须显式透明，
+   否则会露出 Qt 默认的白色底，深色界面上就是一块刺眼的白 */
+QScrollArea {{ background: transparent; border: none; }}
+QScrollArea > QWidget > QWidget {{ background: transparent; }}
+QScrollArea > QWidget {{ background: transparent; }}
+/* 独立弹出的对话框不会自动继承主窗口的深底，必须显式给 */
+QDialog {{
+    background: #eef5f7;
+    color: #282f2a;
+}}
+QListWidget {{
+    background: #f7f7f1;
+    border: 1px solid #d6d9cf;
+    border-radius: 7px;
+    color: #282f2a;
+    font-size: 12px;
+    outline: none;
+    padding: 4px;
+}}
+QListWidget::item {{
+    padding: 5px 8px;
+    border-radius: 5px;
+    margin: 1px 2px;
+}}
+QListWidget::item:hover {{ background: #eaf0e7; }}
+QListWidget::item:selected {{
+    background: {ACCENT_DIM};
+    color: #ffffff;
+}}
+/* 组合成员表：表头、网格线、选中行全部走深色，缺一项就是一块白 */
+QTableWidget {{
+    background: #f7f7f1;
+    alternate-background-color: #f7f7f1;
+    color: #282f2a;
+    gridline-color: #dedfd6;
+    border: 1px solid #d6d9cf;
+    border-radius: 7px;
+    font-size: 12px;
+    outline: none;
+    selection-background-color: {ACCENT_DIM};
+    selection-color: #ffffff;
+}}
+QTableWidget::item {{ padding: 4px 6px; border: none; }}
+QTableWidget::item:selected {{ background: {ACCENT_DIM}; }}
+QHeaderView::section {{
+    background: #eeefe7;
+    color: #3a4940;
+    border: none;
+    border-bottom: 1px solid #d6d9cf;
+    padding: 6px 8px;
+    font-size: 12px;
+}}
+QTableCornerButton::section {{
+    background: #eeefe7;
+    border: none;
+}}
+QScrollBar:horizontal {{
+    background: transparent;
+    height: 8px;
+    margin: 0;
+}}
+QScrollBar::handle:horizontal {{
+    background: #b8c5ba;
+    border-radius: 4px;
+    min-width: 28px;
+}}
+QScrollBar::handle:horizontal:hover {{ background: #849c90; }}
+QScrollBar:vertical {{
+    background: transparent;
+    width: 8px;
+    margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: #b8c5ba;
+    border-radius: 4px;
+    min-height: 28px;
+}}
+QScrollBar::handle:vertical:hover {{ background: #849c90; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+"""
+
+
+# ---------------------------------------------------------------- 小部件
+
+# 无边框窗口的缩放：窗口整块都当普通客户区，边缘判定、光标形状、拖动缩放
+# 全在 Qt 层自己做。
+#
+# ★ 走过的弯路：一开始让窗口接 WM_NCHITTEST 回缩放区域码，想让系统自己当边框。
+#   结果系统把边缘算成"非客户区"之后，Qt 就不再产生普通鼠标按下事件，
+#   按下处理收不到，缩放循环也就起不来 —— 表现是"光标不变、按下去也不动"。
+#   所以现在不碰系统 hit-test，见 SettingsWindow._edges_at / mousePressEvent。
+_RESIZE_BORDER = 6      # 距离窗口边缘多少像素算"贴着边"（逻辑像素）
+
+
+def _cursor_for_edges(edges):
+    """缩放边缘 -> 对应的鼠标形状；不在边上就返回 None。"""
+    if not edges:
+        return None
+    left = bool(edges & Qt.LeftEdge)
+    right = bool(edges & Qt.RightEdge)
+    top = bool(edges & Qt.TopEdge)
+    bottom = bool(edges & Qt.BottomEdge)
+    if (left and top) or (right and bottom):
+        return Qt.SizeFDiagCursor
+    if (right and top) or (left and bottom):
+        return Qt.SizeBDiagCursor
+    if left or right:
+        return Qt.SizeHorCursor
+    if top or bottom:
+        return Qt.SizeVerCursor
+    return None
+
+_QT_TO_KEY = {
+    Qt.Key_Space: "space",
+    Qt.Key_Tab: "tab",
+    Qt.Key_Return: "enter",
+    Qt.Key_Enter: "enter",
+    Qt.Key_Escape: "esc",
+    Qt.Key_Shift: "shift",
+    Qt.Key_Control: "ctrl",
+    Qt.Key_Alt: "alt",
+    Qt.Key_CapsLock: "capslock",
+    Qt.Key_Comma: "comma",
+    Qt.Key_Period: "period",
+    Qt.Key_Slash: "slash",
+    Qt.Key_Semicolon: "semicolon",
+    Qt.Key_Apostrophe: "quote",
+    # 主键区剩下的符号键
+    Qt.Key_Minus: "minus",
+    Qt.Key_Equal: "equal",
+    Qt.Key_BracketLeft: "lbracket",
+    Qt.Key_BracketRight: "rbracket",
+    Qt.Key_Backslash: "backslash",
+    Qt.Key_QuoteLeft: "backquote",
+    # 方向键 / 编辑区
+    Qt.Key_Up: "up",
+    Qt.Key_Down: "down",
+    Qt.Key_Left: "left",
+    Qt.Key_Right: "right",
+    Qt.Key_Insert: "insert",
+    Qt.Key_Home: "home",
+    Qt.Key_End: "end",
+    Qt.Key_PageUp: "pageup",
+    Qt.Key_PageDown: "pagedown",
+    Qt.Key_NumLock: "numlock",
+    # 其他
+    Qt.Key_Print: "printscreen",
+    Qt.Key_ScrollLock: "scrolllock",
+    Qt.Key_Pause: "pause",
+    Qt.Key_Menu: "menu",
+}
+
+# 小键盘上键位名和主键区重复（回车、0-9、* + - . /），靠 KeypadModifier 区分。
+# Qt 在这几种情况下会带这个修饰位，所以先判小键盘，落到这里就按小键盘算。
+_QT_KEYPAD_TO_KEY = {
+    Qt.Key_Asterisk: "num_mul",
+    Qt.Key_Plus: "num_add",
+    Qt.Key_Minus: "num_sub",
+    Qt.Key_Period: "num_dot",
+    Qt.Key_Slash: "num_div",
+}
+
+
+_QT_BUTTON_TO_KEY = {
+    Qt.LeftButton: "mouse_left",
+    Qt.RightButton: "mouse_right",
+    Qt.MiddleButton: "mouse_middle",
+    Qt.BackButton: "mouse_4",      # 侧键 1
+    Qt.ForwardButton: "mouse_5",   # 侧键 2
+}
+
+# 能单独绑定的修饰键。故意不含 Win：单绑 Win 会跟开始菜单抢焦点，
+# 而且 GetAsyncKeyState 查 0x5B 常常读到系统刚吞下的那一下。
+_MODIFIER_KEYS = {
+    Qt.Key_Shift: "shift",
+    Qt.Key_Control: "ctrl",
+    Qt.Key_Alt: "alt",
+}
+# 松开某个修饰键时，Qt 报的 modifiers() 里仍然带着这个键自己
+# （Shift 松手那一刻还是 ShiftModifier），所以要把它自己刨掉再看还有没有别的。
+_MODIFIER_FLAGS = {
+    Qt.Key_Shift: Qt.ShiftModifier,
+    Qt.Key_Control: Qt.ControlModifier,
+    Qt.Key_Alt: Qt.AltModifier,
+}
+
+# 显示用短名。鼠标键不能直接显示 "MOUSE_4"，框里放不下也看不懂
+_KEY_LABEL = {
+    "mouse_left": "鼠标左键",
+    "mouse_right": "鼠标右键",
+    "mouse_middle": "鼠标中键",
+    "mouse_4": "侧键1",
+    "mouse_5": "侧键2",
+    "wheel_up": "滚轮上",
+    "wheel_down": "滚轮下",
+    "wheel_left": "横滚←",
+    "wheel_right": "横滚→",
+    "space": "空格",
+    "enter": "回车",
+    "esc": "Esc",
+    "tab": "Tab",
+    "comma": ",",
+    "period": ".",
+    "slash": "/",
+    "semicolon": ";",
+    "quote": "'",
+    "capslock": "Caps",
+    "ctrl": "Ctrl",
+    "shift": "Shift",
+    "alt": "Alt",
+    "win": "Win",
+    "up": "↑",
+    "down": "↓",
+    "left": "←",
+    "right": "→",
+    "insert": "Insert",
+    "home": "Home",
+    "end": "End",
+    "pageup": "PgUp",
+    "pagedown": "PgDn",
+    "numlock": "NumLock",
+    "num_mul": "小键盘*",
+    "num_add": "小键盘+",
+    "num_sub": "小键盘-",
+    "num_dot": "小键盘.",
+    "num_div": "小键盘/",
+    "minus": "-",
+    "equal": "=",
+    "lbracket": "[",
+    "rbracket": "]",
+    "backslash": "\\",
+    "backquote": "`",
+    "printscreen": "PrtSc",
+    "scrolllock": "ScrLk",
+    "pause": "Pause",
+    "menu": "Menu",
+}
+_KEY_LABEL.update({f"num{i}": f"小键盘{i}" for i in range(10)})
+
+
+def key_label(name: str) -> str:
+    """绑定名 -> 框里显示的短名，支持组合键。
+
+    组合键不写空格（"Ctrl+Shift+Y" 而不是 "Ctrl + Shift + Y"）：
+    按键框宽度有限，带空格会被截成 "Ctrl + Shif…"，反而看不清绑的是什么。
+    """
+    parts = sr.spec_parts(name)
+    if not parts:
+        return ""
+    return "+".join(sr.BUTTON_LABELS.get(p, _KEY_LABEL.get(p, p.upper())) for p in parts)
+
+
+def _mods_prefix(mods) -> str:
+    """Qt 修饰键状态 -> "ctrl+alt+shift+win" 的前半段（保持固定顺序）。"""
+    parts = []
+    if mods & Qt.ControlModifier:
+        parts.append("ctrl")
+    if mods & Qt.AltModifier:
+        parts.append("alt")
+    if mods & Qt.ShiftModifier:
+        parts.append("shift")
+    if mods & Qt.MetaModifier:
+        parts.append("win")
+    return "+".join(parts)
+
+
+def key_name_of(ev) -> str:
+    """Qt 按键事件 -> config 里的按键名（vk_of 能认的那种）。"""
+    k = ev.key()
+    # 小键盘先判：它的数字和运算符跟主键区共用 Qt 键值，只能靠这个标志位分家。
+    # 小键盘回车（Key_Enter）不在此列 —— 它和主键区回车本来就同一个虚拟键码。
+    if ev.modifiers() & Qt.KeypadModifier:
+        if k in _QT_KEYPAD_TO_KEY:
+            return _QT_KEYPAD_TO_KEY[k]
+        if Qt.Key_0 <= k <= Qt.Key_9:
+            return f"num{k - Qt.Key_0}"
+        if k in (Qt.Key_Enter, Qt.Key_Return):
+            return "enter"
+        return ""
+    if k in _QT_TO_KEY:
+        return _QT_TO_KEY[k]
+    if Qt.Key_A <= k <= Qt.Key_Z:
+        return chr(k).lower()
+    if Qt.Key_0 <= k <= Qt.Key_9:
+        return chr(k)
+    if Qt.Key_F1 <= k <= Qt.Key_F24:
+        return f"f{k - Qt.Key_F1 + 1}"
+    return ""
+
+
+class _KeyEdit(QLineEdit):
+    """真正接键盘/鼠标的那个输入框：按哪个键就绑哪个键。
+
+    原来这里是普通输入框，得手动输 "f1" 再按回车才生效，
+    大部分人点了进去打几个字发现没反应，就以为功能坏了。
+    """
+
+    key_changed = Signal(str)
+
+    def __init__(self, value: str = "", width: int = 96,
+                 allow_gamepad: bool = False) -> None:
+        super().__init__()
+        self.key_name = ""
+        self._allow_gamepad = allow_gamepad
+        # 单独按修饰键时先记着，松手那一刻如果没配主键，就当它自己是个键
+        self._pending_mod = ""
+        self._gamepad = None
+        self._pad_prev: set[str] = set()
+        self._pad_timer = QTimer(self)
+        self._pad_timer.setInterval(30)
+        self._pad_timer.timeout.connect(self._poll_gamepad)
+        self.setFixedWidth(width)
+        self.setAlignment(Qt.AlignCenter)
+        self.setPlaceholderText("未绑定")
+        self.setProperty("jinkra_key_capture", True)
+        self.setReadOnly(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setContextMenuPolicy(Qt.NoContextMenu)
+        self.set_key(value)
+
+    # ---- 取值/显示 ----
+    def set_key(self, name: str) -> None:
+        """外部设置绑定（不会回头触发 key_changed，避免回环）。"""
+        self.key_name = sr.norm_spec(name)
+        self.setText(key_label(self.key_name))
+        self.setToolTip(self._tip())
+
+    def _tip(self) -> str:
+        tip = (
+            "点一下，然后按键盘键、鼠标键或滚轮；右侧 ✕ 或 Delete 取消绑定\n"
+            "要绑组合键就这样：按住 Ctrl / Shift / Alt，再按主键\n"
+            "只按一下 Ctrl / Shift / Alt 也能单独绑上（松手那一刻生效）\n"
+            "（要绑鼠标左键请双击这个框，单击左键只是选中框）"
+        )
+        if self._allow_gamepad:
+            tip += "\nXbox 手柄：点进框后按按钮（蓝牙/有线均可）；LT/RT 按过一半录入。"
+        return tip
+
+    # ---- 录入 ----
+    def keyPressEvent(self, ev) -> None:  # noqa: N802
+        if ev.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            self._apply("")
+            return
+        if ev.key() in _MODIFIER_KEYS:
+            # 修饰键按下先不绑：它可能只是组合键的前半截。
+            # 记下来，等松手时再看看有没有配主键（见 keyReleaseEvent）。
+            self._pending_mod = _MODIFIER_KEYS[ev.key()]
+            return
+        name = key_name_of(ev)
+        if name:
+            self._pending_mod = ""      # 配了主键，说明是组合，修饰键不再单独算
+            prefix = _mods_prefix(ev.modifiers())
+            self._apply(f"{prefix}+{name}" if prefix else name)
+
+    def keyReleaseEvent(self, ev) -> None:  # noqa: N802
+        if ev.key() in _MODIFIER_KEYS:
+            pending = self._pending_mod
+            self._pending_mod = ""
+            # 还按着别的修饰键 → 这是 Ctrl+Shift 之类的半个组合，不绑
+            others = ev.modifiers().value & ~_MODIFIER_FLAGS[ev.key()].value
+            if pending == _MODIFIER_KEYS[ev.key()] and others == 0:
+                self._apply(pending)
+            return
+        super().keyReleaseEvent(ev)
+
+    def wheelEvent(self, ev) -> None:  # noqa: N802
+        # 只在框有焦点时录入，否则在列表里滚一下就把绑定改掉了
+        if not self.hasFocus():
+            super().wheelEvent(ev)
+            return
+        dy = ev.angleDelta().y()
+        dx = ev.angleDelta().x()
+        # 普通滚轮是 y，横向滚轮（往左右拨）是 x
+        if dy == 0 and dx == 0:
+            return
+        if dy:
+            name = "wheel_up" if dy > 0 else "wheel_down"
+        else:
+            name = "wheel_right" if dx > 0 else "wheel_left"
+        self._apply(name)
+        ev.accept()
+
+    def mousePressEvent(self, ev) -> None:  # noqa: N802
+        prefix = _mods_prefix(ev.modifiers())
+        if ev.button() == Qt.LeftButton and not prefix:
+            # 单击左键只用来聚焦，不然每次点框都会把自己绑成左键
+            self.setFocus(Qt.MouseFocusReason)
+            ev.accept()
+            return
+        name = _QT_BUTTON_TO_KEY.get(ev.button())
+        if name is None:
+            super().mousePressEvent(ev)
+            return
+        self._apply(f"{prefix}+{name}" if prefix else name)
+        ev.accept()
+
+    def mouseDoubleClickEvent(self, ev) -> None:  # noqa: N802
+        prefix = _mods_prefix(ev.modifiers())
+        if ev.button() == Qt.LeftButton:
+            self.setFocus(Qt.MouseFocusReason)
+            self._apply(f"{prefix}+mouse_left" if prefix else "mouse_left")
+            ev.accept()
+            return
+        super().mouseDoubleClickEvent(ev)
+
+    def _apply(self, name: str) -> None:
+        self.key_name = sr.norm_spec(name)
+        self.setText(key_label(self.key_name))
+        self.setToolTip(self._tip())
+        self.key_changed.emit(self.key_name)
+
+    def focusInEvent(self, ev) -> None:  # noqa: N802
+        super().focusInEvent(ev)
+        self.selectAll()
+        if self._allow_gamepad:
+            self._gamepad = sr.GamepadInput()
+            self._gamepad.update()
+            self._pad_prev = set(self._gamepad.buttons)
+            self._pad_timer.start()
+
+    def focusOutEvent(self, ev) -> None:  # noqa: N802
+        self._pad_timer.stop()
+        super().focusOutEvent(ev)
+
+    def _poll_gamepad(self) -> None:
+        if self._gamepad is None:
+            return
+        self._gamepad.update()
+        buttons = set(self._gamepad.buttons)
+        pressed = buttons - self._pad_prev
+        self._pad_prev = buttons
+        if not (self.hasFocus() and self.isVisible() and self.window().isActiveWindow()):
+            return
+        if pressed:
+            key = next(k for k in sr.BUTTON_LABELS if k in pressed)
+            self._apply(key)
+
+
+class KeyBox(QWidget):
+    """按键绑定框 = 输入框 + 一个看得见的清除按钮。
+
+    以前只有"按 Delete 清除"，写在悬停提示里，绝大多数人根本不会发现，
+    表现出来就是"绑上去以后没法取消了"。所以补一个常驻的 ✕：
+    空着时灰掉，绑了键就亮起来，点一下立刻解除绑定。
+    """
+
+    key_changed = Signal(str)
+
+    def __init__(self, value: str = "", width: int = 128,
+                 allow_gamepad: bool = False) -> None:
+        super().__init__()
+        self.setObjectName("KeyBox")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        self.edit = _KeyEdit(value, max(56, width - 24), allow_gamepad)
+        lay.addWidget(self.edit, 1)
+
+        self.btn_clear = QPushButton("✕")
+        self.btn_clear.setObjectName("KeyClear")
+        self.btn_clear.setFixedSize(20, 20)
+        self.btn_clear.setCursor(Qt.PointingHandCursor)
+        self.btn_clear.setFocusPolicy(Qt.NoFocus)  # 别把焦点从输入框抢走
+        lay.addWidget(self.btn_clear, 0, Qt.AlignVCenter)
+
+        self.setFixedWidth(width)
+        self.edit.key_changed.connect(self._on_edit)
+        self.btn_clear.clicked.connect(self.clear_key)
+        self._sync_clear()
+
+    # ---- 取值/显示 ----
+    @property
+    def key_name(self) -> str:
+        return self.edit.key_name
+
+    def set_key(self, name: str) -> None:
+        """外部设置绑定（不会回头触发 key_changed，避免回环）。"""
+        self.edit.set_key(name)
+        self._sync_clear()
+
+    def clear_key(self) -> None:
+        """解除绑定。已经是空的就什么也不做（按钮此时本来就是灰的）。"""
+        if self.edit.key_name:
+            self.edit._apply("")
+
+    def text(self) -> str:
+        """兼容旧写法：显示的是按键短名。"""
+        return self.edit.text()
+
+    def _tip(self) -> str:
+        return self.edit._tip()
+
+    def mark_conflict(self, msg: str) -> None:
+        """这个键被别人占了：输入框描红 + 提示原因。"""
+        self.edit.setStyleSheet(
+            "border:1px solid #ff6b6b;border-radius:6px;color:#a42f47;"
+        )
+        self.setToolTip(msg)
+        self.edit.setToolTip(msg)
+
+    def clear_conflict(self) -> None:
+        self.edit.setStyleSheet("")
+        self.setToolTip(self._tip())
+        self.edit.setToolTip(self._tip())
+
+    def _on_edit(self, name: str) -> None:
+        self._sync_clear()
+        self.key_changed.emit(name)
+
+    def _sync_clear(self) -> None:
+        self.btn_clear.setEnabled(bool(self.edit.key_name))
+
+
+def _navigation_icon(symbol: str, *, on_dark: bool = True) -> QIcon:
+    pixmap = QPixmap(36, 36)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.scale(2, 2)
+    painter.setPen(QPen(QColor("#b4cfbe" if on_dark else "#4c6d60"), 1.3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    painter.setBrush(Qt.NoBrush)
+    if symbol == "library":
+        for x, y in ((3, 7), (6, 4), (9, 6), (12, 3), (15, 7)):
+            painter.drawLine(x, y, x, 18 - y)
+    elif symbol == "keys":
+        painter.drawRoundedRect(QRectF(1.5, 4, 15, 10), 2, 2)
+        for x in (5, 9, 13):
+            painter.drawPoint(x, 7)
+        painter.drawLine(5, 10, 13, 10)
+    elif symbol == "wheel":
+        painter.drawEllipse(QRectF(2, 2, 14, 14))
+        painter.drawEllipse(QRectF(6.5, 6.5, 5, 5))
+        painter.drawLine(9, 2, 9, 6)
+        painter.drawLine(3, 12.5, 6.5, 10.5)
+        painter.drawLine(15, 12.5, 11.5, 10.5)
+    elif symbol == "voice":
+        painter.drawRoundedRect(QRectF(6.5, 1.5, 5, 9), 2.5, 2.5)
+        painter.drawArc(QRectF(4, 4, 10, 10), 180 * 16, 180 * 16)
+        painter.drawLine(9, 14, 9, 17)
+        painter.drawLine(6, 17, 12, 17)
+    else:
+        painter.drawEllipse(QRectF(2, 2, 14, 14))
+        painter.drawText(QRectF(2, 1.4, 14, 14), Qt.AlignCenter, "?")
+    painter.end()
+    return QIcon(pixmap)
+
+
+class TitleBar(QWidget):
+    """自绘标题栏：拖动窗口、最小化、关闭。"""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("TitleBar")
+        self.setAttribute(Qt.WA_StyledBackground)
+        self.setFixedHeight(50)
+        self._drag_from: QPoint | None = None
+        # 顶边那 6 像素压在标题栏上：不开 tracking 就收不到"没按键的移动"，
+        # 光标也就不会变成上下箭头
+        self.setMouseTracking(True)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(18, 0, 12, 0)
+        lay.setSpacing(8)
+
+        dot = QLabel()
+        dot.setPixmap(sr.make_icon().pixmap(28, 28))
+        dot.setFixedSize(28, 28)
+        lay.addWidget(dot)
+
+        title = QLabel(sr.APP_NAME)
+        title.setObjectName("AppTitle")
+        lay.addWidget(title)
+
+        lay.addStretch(1)
+
+        self.btn_min = QPushButton("—")
+        self.btn_min.setObjectName("WinBtn")
+        self.btn_min.setFixedSize(30, 26)
+        self.btn_min.setCursor(Qt.PointingHandCursor)
+        lay.addWidget(self.btn_min)
+
+        self.btn_max = QPushButton("□")
+        self.btn_max.setObjectName("WinBtn")
+        self.btn_max.setToolTip("最大化或还原")
+        self.btn_max.setFixedSize(30, 26)
+        self.btn_max.setCursor(Qt.PointingHandCursor)
+        self.btn_max.clicked.connect(self.toggle_maximized)
+        lay.addWidget(self.btn_max)
+
+        self.btn_close = QPushButton("✕")
+        self.btn_close.setObjectName("WinBtn")
+        self.btn_close.setFixedSize(30, 26)
+        self.btn_close.setCursor(Qt.PointingHandCursor)
+        lay.addWidget(self.btn_close)
+
+    def toggle_maximized(self) -> None:
+        window = self.window()
+        if window.isMaximized():
+            window.showNormal()
+        else:
+            window.showMaximized()
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self.toggle_maximized()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def _win_edges(self, pos):
+        """标题栏上的点 -> 窗口缩放边缘（窗口坐标系，靠 _edges_at 统一算）。"""
+        win = self.window()
+        fn = getattr(win, "_edges_at", None)
+        if fn is None:
+            return None
+        return fn(win.mapFromGlobal(self.mapToGlobal(pos)))
+
+    def mousePressEvent(self, e) -> None:  # noqa: N802
+        if e.button() == Qt.LeftButton:
+            edges = self._win_edges(e.position().toPoint())
+            # 标题栏正好压着窗口顶边：这 6 像素要让给缩放，不能拿来拖窗口
+            if edges:
+                begin = getattr(self.window(), "begin_resize", None)
+                if begin is not None and begin(edges, e.globalPosition().toPoint()):
+                    e.accept()
+                    return
+            self._drag_from = e.globalPosition().toPoint() - self.window().frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, e) -> None:  # noqa: N802
+        win = self.window()
+        if getattr(win, "_rs_active", False) and e.buttons() & Qt.LeftButton:
+            win._apply_manual_resize(e.globalPosition().toPoint())
+            return
+        if self._drag_from is not None and e.buttons() & Qt.LeftButton:
+            win.move(e.globalPosition().toPoint() - self._drag_from)
+            return
+        self.setCursor(
+            _cursor_for_edges(self._win_edges(e.position().toPoint())) or Qt.ArrowCursor
+        )
+
+    def leaveEvent(self, e) -> None:  # noqa: N802
+        self.setCursor(Qt.ArrowCursor)
+
+    def mouseReleaseEvent(self, e) -> None:  # noqa: N802
+        self._drag_from = None
+
+
+def _card(title: str = "") -> tuple[QFrame, QVBoxLayout]:
+    """返回一个带内边距的卡片容器和它的布局。"""
+    frame = QFrame()
+    frame.setObjectName("Card")
+    lay = QVBoxLayout(frame)
+    lay.setContentsMargins(16, 14, 16, 14)
+    lay.setSpacing(10)
+    if title:
+        lab = QLabel(title)
+        lab.setObjectName("SectionLabel")
+        lay.addWidget(lab)
+    return frame, lay
+
+
+def _row(label: str, widget: QWidget, hint: str = "") -> QWidget:
+    """一行设置项：左边标签，右边控件。"""
+    w = QWidget()
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(12)
+    lab = QLabel(label)
+    lab.setFixedWidth(86)
+    lab.setStyleSheet("color:#405477;font-size:12px;")
+    lay.addWidget(lab)
+    lay.addWidget(widget, 1)
+    if hint:
+        h = QLabel(hint)
+        h.setObjectName("Hint")
+        h.setWordWrap(True)
+        h.setMaximumWidth(134)
+        lay.addWidget(h)
+    return w
+
+
+def scfg_save(scfg) -> None:
+    """保存 sounds.json。失败只记日志——用户正在改东西，弹窗打断更糟。"""
+    if scfg is None:
+        return
+    try:
+        scfg.save()
+    except Exception as exc:
+        sr._log(f"[settings] 保存 sounds.json 失败: {exc}")
+
+
+def _wrap_row(layout) -> QWidget:
+    """把一堆控件横向排好后塞进 _row 的"右侧控件"位。"""
+    w = QWidget()
+    w.setLayout(layout)
+    layout.setContentsMargins(0, 0, 0, 0)
+    return w
+
+
+def _divider() -> QFrame:
+    d = QFrame()
+    d.setObjectName("Divider")
+    d.setFrameShape(QFrame.HLine)
+    return d
+
+
+class _WrapLabel(QLabel):
+    """会自己撑高的自动换行标签。
+
+    QLabel 开了 wordWrap 之后，布局拿到的 sizeHint 是按"一行"算的，
+    多行长文本会被压扁成半截。这里每次宽度变化都按 heightForWidth
+    把最小高度顶回去，文字再长也不会被切掉。
+    """
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self.setWordWrap(True)
+
+    def resizeEvent(self, ev) -> None:  # noqa: N802
+        super().resizeEvent(ev)
+        self._fit()
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        super().setText(text)
+        self._fit()
+
+    def _fit(self) -> None:
+        """按当前宽度量一遍文字实际要多高。
+
+        不用 QLabel.heightForWidth()：它在布局还没定宽的时候会给出偏小的值，
+        结果多行文字被切掉半截。直接用字体度量按"自动换行"框一遍最稳。
+        """
+        w = self.width()
+        if w <= 0 or not self.text():
+            return
+        fm = self.fontMetrics()
+        rect = fm.boundingRect(
+            QRect(0, 0, w, 10000),
+            Qt.TextWordWrap | Qt.AlignLeft | Qt.TextExpandTabs,
+            self.text(),
+        )
+        need = rect.height() + 2
+        if need != self.minimumHeight():
+            self.setMinimumHeight(need)
+
+
+# ---------------------------------------------------------------- 左侧页
+
+class LibraryPage(QWidget):
+    """音效库：矩形格子列出 sounds 目录里的全部音效。
+
+    自己也是拖放目标：从轮盘上把音效拖回这里 = 从轮盘移除。
+    最下面一节是组合音效（内置编辑器，可拖到轮盘）。
+    """
+
+    slot_removed = Signal(int)
+    preview_requested = Signal(str)
+    combo_new = Signal()
+    combo_edit = Signal(str)     # cid
+    combo_delete = Signal(str)   # cid
+    # 库里有东西被拖起来 / 拖拽结束（转发给轮盘预览点亮中心）
+    drag_began = Signal()
+    drag_ended = Signal()
+
+    def __init__(self, bank: sr.SoundBank, scfg=None) -> None:
+        super().__init__()
+        self.bank = bank
+        self.scfg = scfg
+        self.setAcceptDrops(True)
+
+        self.setObjectName("Library")
+        self.setAttribute(Qt.WA_StyledBackground)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(15, 14, 15, 15)
+        root.setSpacing(10)
+
+        title = QLabel("音效库")
+        title.setObjectName("CardTitle")
+        root.addWidget(title)
+
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("搜索音效…")
+        self.search.setClearButtonEnabled(True)
+        bar.addWidget(self.search, 1)
+        self.btn_folder = QPushButton("打开文件夹")
+        self.btn_folder.setObjectName("Primary")
+        self.btn_folder.setCursor(Qt.PointingHandCursor)
+        self.btn_folder.clicked.connect(self._open_folder)
+        bar.addWidget(self.btn_folder)
+        root.addLayout(bar)
+
+        fbar = QHBoxLayout()
+        fbar.setSpacing(8)
+        self.folder_filter = QComboBox()
+        self.folder_filter.setMinimumWidth(132)
+        self.folder_filter.setToolTip("只看某个文件夹里的音效（和右边的搜索同时生效）")
+        self.folder_filter.currentIndexChanged.connect(lambda _i: self.refresh())
+        fbar.addWidget(self.folder_filter)
+        fbar.addStretch(1)
+        self.result_count = QLabel()
+        self.result_count.setObjectName("Hint")
+        fbar.addWidget(self.result_count)
+        root.addLayout(fbar)
+
+        self.lbl_parked = QLabel()
+        self.lbl_parked.setWordWrap(True)
+        self.lbl_parked.setStyleSheet("color:#875219;font-size:11px;")
+        self.lbl_parked.hide()
+        root.addWidget(self.lbl_parked)
+
+        self.search.textChanged.connect(lambda _t: self.refresh())
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        holder = QWidget()
+        self.grid = QGridLayout(holder)
+        self.grid.setContentsMargins(0, 0, 4, 0)
+        self.grid.setSpacing(6)
+        self.grid.setAlignment(Qt.AlignTop)
+        self.grid.setColumnStretch(0, 1)
+        self.scroll.setWidget(holder)
+        root.addWidget(self.scroll, 1)
+
+        # ---- 组合音效 ----
+        divider = QFrame()
+        divider.setObjectName("Divider")
+        root.addWidget(divider)
+
+        chead = QHBoxLayout()
+        chead.setSpacing(8)
+        ctitle = QLabel("组合音效")
+        ctitle.setObjectName("SectionLabel")
+        chead.addWidget(ctitle)
+        chead.addStretch(1)
+        self.btn_combo_new = QPushButton("＋ 新建组合")
+        self.btn_combo_new.setCursor(Qt.PointingHandCursor)
+        self.btn_combo_new.clicked.connect(self.combo_new.emit)
+        chead.addWidget(self.btn_combo_new)
+        self.btn_combo_edit = QPushButton("编辑")
+        self.btn_combo_edit.setCursor(Qt.PointingHandCursor)
+        self.btn_combo_edit.clicked.connect(self._edit_selected_combo)
+        chead.addWidget(self.btn_combo_edit)
+        self.btn_combo_del = QPushButton("删除")
+        self.btn_combo_del.setCursor(Qt.PointingHandCursor)
+        self.btn_combo_del.clicked.connect(self._delete_selected_combo)
+        chead.addWidget(self.btn_combo_del)
+        root.addLayout(chead)
+
+        self.combo_list = _ComboList(self)
+        self.combo_list.setFixedHeight(86)
+        self.combo_list.edit_requested.connect(self.combo_edit.emit)
+        self.combo_list.delete_requested.connect(self.combo_delete.emit)
+        self.combo_list.drag_began.connect(self.drag_began.emit)
+        self.combo_list.drag_ended.connect(self.drag_ended.emit)
+        root.addWidget(self.combo_list)
+
+        self.refresh()
+
+    def refresh(self) -> None:
+        self.refresh_combos()      # 先刷组合区：下面早退也不会漏
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # 递归扫描：子文件夹里的音效也列出来，用户可以用文件夹分类整理
+        found = sr.scan_sound_files()
+        total = len(found)
+        self.result_count.setText(f"{total} 个音效")
+        self._fill_folder_filter(found)
+        self._refresh_parked_hint()
+        kw = self.search.text().strip().lower()
+        sel = self.folder_filter.currentData() if self.folder_filter.count() else None
+
+        # 轮盘上已经有的（按相对路径比，子文件夹里的同名文件不会互相顶替）
+        on_wheel = {
+            sr.sound_key(p) for p in self.bank.items if isinstance(p, Path)
+        } if (self.scfg is not None and len(self.bank) > 0) else set()
+
+        if not found:
+            if self.scfg is not None and getattr(self.scfg, "scan_suspicious", False) \
+                    and len(self.scfg.order):
+                msg = (
+                    "这次一个音效都没扫到，但配置里还有 "
+                    f"{len(self.scfg.order)} 个 —— 已按「扫描异常」处理，"
+                    "轮盘和参数都原样保留，没有清空。\n"
+                    "如果 sounds 目录确实空了（比如放在了还没连上的移动硬盘里），"
+                    "插好设备后点这里刷新，或者重新打开这个窗口。"
+                )
+            else:
+                msg = (
+                    "sounds 目录里还没有音效。\n"
+                    "点上面的「打开文件夹」，把音频文件放进去，再回来就能看到了。"
+                )
+            empty = QLabel(msg)
+            empty.setObjectName("Hint")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setWordWrap(True)
+            self.grid.addWidget(empty, 0, 0)
+            return
+
+        # 按文件夹分组。key 里的 "/" 前面那段就是分组名，顶层的归一组
+        groups: dict[str, list[tuple[str, Path]]] = {}
+        for key, path in found:
+            if kw and kw not in path.stem.lower():
+                continue
+            group = key.rsplit("/", 1)[0] if "/" in key else ""
+            if sel is not None and group != sel:
+                continue
+            groups.setdefault(group, []).append((key, path))
+
+        if not groups:
+            if sel is not None:
+                msg = f"「{sel or '根目录'}」里没有匹配的音效。"
+            else:
+                msg = f"没有匹配「{kw}」的音效。"
+            empty = QLabel(msg)
+            empty.setObjectName("Hint")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setWordWrap(True)
+            self.grid.addWidget(empty, 0, 0)
+            return
+
+        row = 0
+        displayed = sum(len(items) for items in groups.values())
+        self.result_count.setText(f"{displayed} / {total} 个音效" if displayed < total else f"{total} 个音效")
+        for group in sorted(groups, key=lambda g: (g != "", g.lower())):
+            items = groups[group]
+            if group or len(groups) > 1:
+                head = QLabel(
+                    f"{group or '根目录'}    {len(items)} 个"
+                )
+                head.setObjectName("SectionLabel")
+                head.setStyleSheet(
+                    f"color:{accent_hex()};font-size:12px;font-weight:600;"
+                    "padding:6px 2px 2px 2px;background:transparent;"
+                )
+                self.grid.addWidget(head, row, 0)
+                row += 1
+            for key, path in items:
+                cell = _SoundCell(path, key in on_wheel)
+                cell.drag_began.connect(self.drag_began.emit)
+                cell.drag_ended.connect(self.drag_ended.emit)
+                cell.preview_requested.connect(self.preview_requested.emit)
+                self.grid.addWidget(cell, row, 0)
+                row += 1
+
+        self.refresh_combos()
+
+    def _fill_folder_filter(self, found) -> None:
+        """把 sounds 里出现过的文件夹填进筛选框，尽量保住用户当前选的那个。"""
+        folders: list[str] = []
+        has_root = False
+        for key, _path in found:
+            if "/" in key:
+                group = key.rsplit("/", 1)[0]
+            else:
+                has_root = True
+                continue
+            if group not in folders:
+                folders.append(group)
+        folders.sort(key=str.lower)
+
+        prev = self.folder_filter.currentData() if self.folder_filter.count() else None
+        self.folder_filter.blockSignals(True)   # 重建时别触发 refresh，不然会递归
+        self.folder_filter.clear()
+        self.folder_filter.addItem("全部文件夹")
+        if has_root:
+            self.folder_filter.addItem("根目录", "")
+        for group in folders:
+            self.folder_filter.addItem(group, group)
+        idx = self.folder_filter.findData(prev) if prev is not None else 0
+        if idx < 0:      # 之前选中的文件夹已经空了，退回"全部"
+            idx = 0
+        self.folder_filter.setCurrentIndex(max(0, idx))
+        self.folder_filter.blockSignals(False)
+
+    def _refresh_parked_hint(self) -> None:
+        """文件暂时不在的音效不该让用户以为"设置丢了"，明说着在。"""
+        n = len(getattr(self.scfg, "parked", {}) or {}) if self.scfg is not None else 0
+        if n:
+            self.lbl_parked.setText(
+                f"有 {n} 个音效这次在 sounds 目录里没找到，"
+                "它们的设置（音量、变调、快捷键、条件）都保留着，"
+                "把文件放回原处就会自动恢复。"
+            )
+            self.lbl_parked.show()
+        else:
+            self.lbl_parked.hide()
+
+    def refresh_combos(self) -> None:
+        """刷新底部组合列表：名字、成员数、播放方式、是否已在轮盘。"""
+        self.combo_list.clear()
+        if self.scfg is None:
+            return
+        on_wheel = {sr.sound_key(p) for p in self.bank.items if isinstance(p, Path)}
+        for c in self.scfg.combos.values():
+            mode = COMBO_MODE_LABEL.get(c.mode, c.mode)
+            tail = f"{len(c.items)} 项 · {mode}"
+            if self.scfg.combo_key(c.cid) in on_wheel:
+                tail += " · 已在轮盘"
+            it = QListWidgetItem(f"◆{c.name}    {tail}")
+            it.setData(Qt.UserRole, c.cid)
+            if self.scfg.combo_key(c.cid) in on_wheel:
+                it.setForeground(accent())
+            self.combo_list.addItem(it)
+        if not self.scfg.combos:
+            it = QListWidgetItem("还没有组合音效。点「＋ 新建组合」开始搭一个。")
+            it.setFlags(Qt.NoItemFlags)
+            it.setForeground(QColor("#506c7e"))
+            self.combo_list.addItem(it)
+
+    def _selected_cid(self) -> str:
+        it = self.combo_list.currentItem()
+        return str(it.data(Qt.UserRole) or "") if it else ""
+
+    def _edit_selected_combo(self) -> None:
+        cid = self._selected_cid()
+        if cid:
+            self.combo_edit.emit(cid)
+
+    def _delete_selected_combo(self) -> None:
+        cid = self._selected_cid()
+        if cid:
+            self.combo_delete.emit(cid)
+
+    def _open_folder(self) -> None:
+        """在资源管理器里打开 sounds 目录。目录不存在就先建出来。"""
+        try:
+            sr.SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(sr.SOUNDS_DIR))  # noqa: S606
+        except Exception as exc:
+            sr._log(f"[settings] 打开 sounds 目录失败: {exc}")
+
+    def _drop_hint(self, on: bool) -> None:
+        # 这里不能用空字符串还原：那会把背景交还给 Qt 默认的白色
+        vp = self.scroll.viewport()
+        vp.setStyleSheet(
+            "background: rgba(46,211,108,26);" if on else "background: transparent;"
+        )
+
+    # ---- 从轮盘拖回音效库 = 移除 ----
+    def dragEnterEvent(self, e) -> None:  # noqa: N802
+        if e.mimeData().hasFormat(MIME_SLOT):
+            self._drop_hint(True)
+            e.acceptProposedAction()
+
+    def dragMoveEvent(self, e) -> None:  # noqa: N802
+        if e.mimeData().hasFormat(MIME_SLOT):
+            e.acceptProposedAction()
+
+    def dragLeaveEvent(self, e) -> None:  # noqa: N802
+        self._drop_hint(False)
+
+    def dropEvent(self, e) -> None:  # noqa: N802
+        self._drop_hint(False)
+        md = e.mimeData()
+        if md.hasFormat(MIME_SLOT):
+            idx = int(bytes(md.data(MIME_SLOT)).decode("utf-8"))
+            self.slot_removed.emit(idx)
+            e.acceptProposedAction()
+
+
+def _duration_text(path: Path) -> str:
+    """读音频时长。wav 读文件头，mp3/ogg/flac/m4a 让解码器读流信息，读不出显示 —。"""
+    dur = sr.audio_duration(path)
+    return f"{dur:.2f} 秒" if dur > 0 else "—"
+
+
+class _ElideLabel(QLabel):
+    """放不下就用省略号，鼠标悬停看全名。
+
+    音效库的格子宽度由两列平分决定，不能被文字撑开：文件名一长（比如
+    `Surround+Sound+(Explicit)-JJD&21+Savage&Baby+Tate_metool (1)`），
+    QLabel 的 sizeHint 就会把整列顶宽，横向滚动条又是关掉的，右边那一列
+    直接被裁出可视区。所以这里让 label 不参与宽度计算，只按实际分到的宽度
+    把文字截断。
+    """
+
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self._full = text
+        self.setTextFormat(Qt.PlainText)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(0)
+        self.setToolTip(text)
+        self.setText(text)
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._fit_text()
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        super().resizeEvent(e)
+        self._fit_text()
+
+    def _fit_text(self) -> None:
+        full = getattr(self, "_full", "") or ""
+        width = max(0, self.contentsRect().width())
+        if width <= 0:
+            return
+        # 多留 2px：字体度量偶尔比实际绘制宽一点点，不然最后一个字符会被切一半
+        shown = self.fontMetrics().elidedText(full, Qt.ElideRight, width - 2)
+        if shown != self.text():
+            self.setText(shown)
+
+
+class _SoundCell(QFrame):
+    """音效库里的一格。按住拖到右边轮盘即可上盘。
+
+    drag_began / drag_ended 把"这一趟拖拽开始了"广播出去，让轮盘预览
+    能在抓起音效的瞬间就点亮中心 —— 光靠拖放事件不够，因为那要等
+    鼠标真的移进轮盘才会来。
+    """
+
+    preview_requested = Signal(str)
+    drag_began = Signal()
+    drag_ended = Signal()
+
+    def __init__(self, path: Path, on_wheel: bool = False) -> None:
+        super().__init__()
+        self.setObjectName("Cell")
+        self.setFixedHeight(51)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.setMinimumWidth(0)
+        self.setCursor(Qt.OpenHandCursor)
+        self.path = path
+        self.on_wheel = on_wheel
+        self._press: QPoint | None = None
+        self.setProperty("assigned", on_wheel)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(9, 6, 10, 6)
+        lay.setSpacing(10)
+
+        glyph = QLabel()
+        glyph.setObjectName("TrackGlyph")
+        glyph.setFixedSize(32, 32)
+        glyph.setAlignment(Qt.AlignCenter)
+        glyph.setPixmap(_navigation_icon("library", on_dark=False).pixmap(17, 17))
+        lay.addWidget(glyph)
+
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        name = _ElideLabel(path.stem)
+        name.setObjectName("TrackName")
+        col.addWidget(name)
+        meta = _ElideLabel(f"{path.suffix.upper().lstrip('.')} · {_duration_text(path)}")
+        meta.setObjectName("Hint")
+        col.addWidget(meta)
+        lay.addLayout(col, 1)
+        if on_wheel:
+            state = QLabel("已上盘")
+            state.setObjectName("TrackState")
+            lay.addWidget(state)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._press = None
+            self.preview_requested.emit(sr.sound_key(self.path))
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def mousePressEvent(self, e) -> None:  # noqa: N802
+        if e.button() == Qt.LeftButton:
+            self._press = e.position().toPoint()
+
+    def mouseMoveEvent(self, e) -> None:  # noqa: N802
+        if self._press is None or not (e.buttons() & Qt.LeftButton):
+            return
+        if (e.position().toPoint() - self._press).manhattanLength() < 10:
+            return
+        self._press = None
+        mime = QMimeData()
+        # 用相对路径当键：子文件夹里的音效拖到轮盘后能正确定位到文件
+        mime.setData(MIME_LIB, sr.sound_key(self.path).encode("utf-8"))
+        mime.setText(self.path.stem)
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.setPixmap(_drag_pixmap(self.path.stem))
+        self.drag_began.emit()
+        try:
+            drag.exec(Qt.CopyAction)
+        finally:
+            # exec 在松手/取消/拖到窗口外之后才返回，异常也不能让中心一直亮着
+            self.drag_ended.emit()
+
+    def mouseReleaseEvent(self, e) -> None:  # noqa: N802
+        self._press = None
+
+
+class _ComboList(QListWidget):
+    """组合列表：双击编辑，拖出去就落到轮盘上。
+
+    用标准 QListWidget 而不是自绘：滚动、选中、键盘操作都是现成的，
+    少一处自绘就少一处错位的可能（v0.7 的自绘音轨就是教训）。
+    """
+
+    edit_requested = Signal(str)
+    delete_requested = Signal(str)
+    drag_began = Signal()
+    drag_ended = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setSelectionMode(QListWidget.SingleSelection)
+        self.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.itemDoubleClicked.connect(self._on_double)
+
+    def _cid_of(self, item) -> str:
+        return str(item.data(Qt.UserRole) or "") if item is not None else ""
+
+    def _on_double(self, item) -> None:
+        cid = self._cid_of(item)
+        if cid:
+            self.edit_requested.emit(cid)
+
+    def startDrag(self, actions) -> None:  # noqa: N802
+        item = self.currentItem()
+        cid = self._cid_of(item)
+        if not cid:
+            return
+        key = COMBO_PREFIX + cid
+        mime = QMimeData()
+        mime.setData(MIME_LIB, key.encode("utf-8"))
+        mime.setText(key)
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.setPixmap(_drag_pixmap(item.text().split("    ")[0]))
+        self.drag_began.emit()
+        try:
+            drag.exec(Qt.CopyAction)
+        finally:
+            self.drag_ended.emit()
+
+
+class _ComboTimeline(QWidget):
+    """只读时间条：每项一根横条，起点 = 什么时候响，长度 = 响多久。
+
+    刻意做成只读：不能拖、不能改，纯粹是"一眼看出谁压着谁、哪一段是空的"。
+    v0.7 那套可编辑音轨翻车的原因不是"画了个时间轴"，而是拖拽状态机 +
+    自绘坐标系在窗口缩放/DPI 变化时会错位；这里没有任何交互与状态，
+    也就没有错位和卡死可言。
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.spans: list[tuple[int, float, float, bool]] = []
+        self.total = 0.0
+        self.empty_text = "还没有成员"
+        self.setMinimumHeight(86)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_spans(self, spans, total: float) -> None:
+        self.spans = list(spans)
+        self.total = max(0.0, float(total))
+        self.update()
+
+    def paintEvent(self, e) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = max(1, self.width()), max(1, self.height())
+        p.setPen(QPen(QColor("#cdd9ec"), 1))
+        p.setBrush(QColor("#f8faff"))
+        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 7, 7)
+
+        left, right = 12.0, 12.0
+        axis_h = 15.0
+        plot_w = max(1.0, w - left - right)
+        plot_top = 8.0
+        plot_h = max(1.0, h - axis_h - plot_top)
+
+        if not self.spans or self.total <= 0.01:
+            p.setPen(QPen(QColor("#537285")))
+            f = QFont(UI_FONT)
+            f.setPointSizeF(8.5)
+            p.setFont(f)
+            p.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, self.empty_text)
+            return
+
+        scale = plot_w / self.total
+
+        # 分道：互相重叠的项往下排一行，谁也不会被谁盖住
+        lanes: list[float] = []
+        placed: list[tuple[int, float, float, bool, int]] = []
+        for idx, start, dur, ok in sorted(self.spans, key=lambda s: s[1]):
+            lane = None
+            for k, end in enumerate(lanes):
+                if start >= end - 1e-6:
+                    lane = k
+                    lanes[k] = max(end, start + dur)
+                    break
+            if lane is None:
+                lanes.append(start + dur)
+                lane = len(lanes) - 1
+            placed.append((idx, start, dur, ok, lane))
+
+        n_lane = max(1, len(lanes))
+        lane_h = max(9.0, (plot_h - (n_lane - 1) * 3.0) / n_lane)
+
+        for idx, start, dur, ok, lane in placed:
+            x = left + start * scale
+            bw = max(3.0, dur * scale)
+            y = plot_top + lane * (lane_h + 3.0)
+            p.setPen(Qt.NoPen)
+            p.setBrush(accent() if ok else QColor("#a25050"))
+            rad = min(4.0, lane_h / 2.0)
+            p.drawRoundedRect(QRectF(x, y, bw, lane_h), rad, rad)
+            if bw >= 32:
+                p.setPen(QPen(QColor("#0f1218")))
+                f = QFont(UI_FONT)
+                f.setPointSizeF(7.8)
+                f.setBold(True)
+                p.setFont(f)
+                p.drawText(QRectF(x + 2, y, bw - 4, lane_h), Qt.AlignCenter,
+                           f"#{idx + 1}")
+
+        # 时间刻度：最多 10 格，自动挑 1/2/5/10 秒一档
+        step = 1.0
+        while self.total / step > 10:
+            step *= 2.0
+        f = QFont(UI_FONT)
+        f.setPointSizeF(7.5)
+        p.setFont(f)
+        t = 0.0
+        base_y = plot_top + plot_h
+        while t <= self.total + 1e-6:
+            x = left + t * scale
+            p.setPen(QPen(QColor("#a3c4cd"), 1))
+            p.drawLine(QPointF(x, base_y), QPointF(x, base_y + 3))
+            p.setPen(QPen(QColor("#537285")))
+            p.drawText(QRectF(x - 22, base_y + 2, 44, axis_h - 2), Qt.AlignCenter,
+                       f"{t:.0f}s" if step >= 1.0 else f"{t:.1f}s")
+            t += step
+
+
+class _ProgressDialog(QDialog):
+    """重复递进生成器：把选中那一项复制若干份，每份自动错开。
+
+    典型用法（组合音效 1）：选中第一项 → 复制 2 份、每份 +2 半音、
+    延迟 +200ms → 直接得到"原版 / 升调版 / 再升一版"的三连，
+    不用手填三遍数字、也不会算错先后。
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("重复递进生成")
+        self.setStyleSheet(build_qss())
+        self.setMinimumWidth(420)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 12)
+        root.setSpacing(10)
+
+        tip = QLabel(
+            "以选中的这一项为模板，在它后面插入 N 份，每份按下面的增量递进。\n"
+            "裁剪、音量、随机抖动会原样复制，只改变调 / 速度 / 延迟。"
+        )
+        tip.setObjectName("Hint")
+        tip.setWordWrap(True)
+        root.addWidget(tip)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        self.spn_copies = QSpinBox()
+        self.spn_copies.setRange(1, 12)
+        self.spn_copies.setValue(2)
+        self.spn_copies.setSuffix(" 份")
+        grid.addWidget(QLabel("复制份数"), 0, 0)
+        grid.addWidget(self.spn_copies, 0, 1)
+
+        self.spn_semi = QDoubleSpinBox()
+        self.spn_semi.setRange(-12.0, 12.0)
+        self.spn_semi.setSingleStep(0.5)
+        self.spn_semi.setDecimals(1)
+        self.spn_semi.setValue(2.0)
+        self.spn_semi.setSuffix(" 半音")
+        grid.addWidget(QLabel("每份变调"), 1, 0)
+        grid.addWidget(self.spn_semi, 1, 1)
+
+        self.spn_rate = QSpinBox()
+        self.spn_rate.setRange(-50, 50)
+        self.spn_rate.setSingleStep(5)
+        self.spn_rate.setValue(0)
+        self.spn_rate.setSuffix(" %")
+        grid.addWidget(QLabel("每份变速"), 2, 0)
+        grid.addWidget(self.spn_rate, 2, 1)
+
+        self.spn_delay = QSpinBox()
+        self.spn_delay.setRange(-1000, 5000)
+        self.spn_delay.setSingleStep(50)
+        self.spn_delay.setValue(200)
+        self.spn_delay.setSuffix(" ms")
+        grid.addWidget(QLabel("每份延迟"), 3, 0)
+        grid.addWidget(self.spn_delay, 3, 1)
+        root.addLayout(grid)
+
+        note = QLabel("延迟增量是按参照点算的：想让它叠到前一项的尾巴上就填负数。")
+        note.setObjectName("Hint")
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        root.addWidget(bb)
+
+    def values(self) -> tuple[int, float, int, int]:
+        return (
+            int(self.spn_copies.value()),
+            float(self.spn_semi.value()),
+            int(self.spn_rate.value()),
+            int(self.spn_delay.value()),
+        )
+
+
+class ComboEditorDialog(QDialog):
+    """组合音效编辑器（v0.7.2：表格 + 只读时间条，仍然没有可编辑音轨）。
+
+    为什么用表格而不是自绘音轨：
+      · 每一项的"什么时候响"是三个离散选项 + 一个毫秒数，表格能一眼看全，
+        也不会因为窗口缩放/字体变化错位（v0.7 的音轨就是在这上面翻车的）
+      · 标准控件自带键盘操作、滚动、焦点管理，卡死和错位的概率低一个量级
+    改动即时写回 ComboDef 并存盘，没有"取消"——关掉就是保存完了。
+    v0.7.2 加了撤销/重做，改错了 Ctrl+Z 退回去，不用手改回来。
+    """
+
+    changed = Signal()
+
+    COLS = ("#", "音效", "触发条件", "延迟", "音量", "变调", "速度", "时长")
+
+    def __init__(self, scfg, cdef, engine=None, parent=None, cfg=None) -> None:
+        super().__init__(parent)
+        self.scfg = scfg
+        self.cdef = cdef
+        self.engine = engine
+        self.cfg = cfg          # 只用来查快捷键冲突，可以不传
+        self._loading = False
+        self._undo_stack: list[str] = []
+        self._redo_stack: list[str] = []
+        self.setWindowTitle(f"编辑组合：{cdef.name}")
+        self.resize(1120, 812)
+        self.setMinimumSize(1000, 720)
+        # 主窗口的深色样式表不会自动传给独立对话框，必须自己挂一份
+        self.setStyleSheet(build_qss())
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 14, 16, 12)
+        root.setSpacing(9)
+
+        # ---- 第一行：名字 + 播放方式 ----
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        top.addWidget(QLabel("名字"))
+        self.ed_name = QLineEdit(cdef.name)
+        self.ed_name.setMinimumWidth(160)
+        top.addWidget(self.ed_name, 2)
+        top.addWidget(QLabel("播放方式"))
+        self.cmb_mode = QComboBox()
+        for m in COMBO_MODES:
+            self.cmb_mode.addItem(COMBO_MODE_LABEL.get(m, m), m)
+        self.cmb_mode.setCurrentIndex(max(0, self.cmb_mode.findData(cdef.mode)))
+        top.addWidget(self.cmb_mode, 2)
+
+        self.lbl_count = QLabel("随机项数")
+        top.addWidget(self.lbl_count)
+        self.spn_count = QSpinBox()
+        self.spn_count.setRange(1, MAX_COMBO_ITEMS)
+        self.spn_count.setValue(int(cdef.count))
+        self.spn_count.setToolTip("每次从成员里随机抽几项（不会重复抽同一项）")
+        top.addWidget(self.spn_count)
+
+        self.chk_shuffle = QCheckBox("抽到后打乱顺序")
+        self.chk_shuffle.setChecked(bool(cdef.shuffle))
+        top.addWidget(self.chk_shuffle)
+        root.addLayout(top)
+
+        self.lbl_mode_tip = QLabel()
+        self.lbl_mode_tip.setObjectName("Hint")
+        self.lbl_mode_tip.setWordWrap(True)
+        root.addWidget(self.lbl_mode_tip)
+
+        # ---- 中部：左音效库 / 右成员表 ----
+        mid = QHBoxLayout()
+        mid.setSpacing(10)
+
+        left = QVBoxLayout()
+        left.setSpacing(6)
+        left.addWidget(QLabel("sounds 目录（双击加入）"))
+        self.lst_sounds = QListWidget()
+        self.lst_sounds.setFixedWidth(188)
+        for name in self._sound_names():
+            QListWidgetItem(Path(name).stem, self.lst_sounds)
+        # 用 UserRole 存全名，列表显示去扩展名的样子
+        for k, name in enumerate(self._sound_names()):
+            self.lst_sounds.item(k).setData(Qt.UserRole, name)
+        self.lst_sounds.itemDoubleClicked.connect(self._add_sound)
+
+        self.ed_find = QLineEdit()
+        self.ed_find.setPlaceholderText("搜索音效…")
+        self.ed_find.setClearButtonEnabled(True)
+        self.ed_find.setToolTip(
+            "打几个字就把列表筛出来，并自动滚到第一个匹配的位置。\n"
+            "回车直接把当前选中的音效加进组合，清空就恢复全部。"
+        )
+        self.ed_find.textChanged.connect(self._filter_sounds)
+        self.ed_find.returnPressed.connect(self._add_current_sound)
+        left.addWidget(self.ed_find)
+        left.addWidget(self.lst_sounds, 1)
+        tip = QLabel("同一个音效可以重复加入")
+        tip.setObjectName("Hint")
+        tip.setWordWrap(True)
+        left.addWidget(tip)
+        mid.addLayout(left)
+
+        right = QVBoxLayout()
+        right.setSpacing(6)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        head.addWidget(QLabel("成员（行序 = 播放顺序）"))
+        head.addStretch(1)
+        for text, fn, tip_text in (
+            ("上移", self._move_up, "和上一行交换位置"),
+            ("下移", self._move_down, "和下一行交换位置"),
+            ("删除这一项", self._remove_item, "从组合里移掉（不删文件）"),
+            ("递进复制…", self._progress_copy,
+             "把选中项复制几份，每份自动变调/变速/延迟错开"),
+        ):
+            b = QPushButton(text)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(tip_text)
+            b.clicked.connect(fn)
+            head.addWidget(b)
+        right.addLayout(head)
+
+        self.table = QTableWidget(0, len(self.COLS))
+        self.table.setHorizontalHeaderLabels(self.COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(False)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.Fixed)
+        hh.setSectionResizeMode(1, QHeaderView.Stretch)
+        for c in range(2, len(self.COLS)):
+            hh.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        self.table.setColumnWidth(0, 34)
+        self.table.verticalHeader().setDefaultSectionSize(34)
+        self.table.itemSelectionChanged.connect(self._sync_detail_bar)
+        right.addWidget(self.table, 1)
+        mid.addLayout(right, 1)
+        root.addLayout(mid, 1)
+
+        # ---- 只读时间条 ----
+        row_tl = QHBoxLayout()
+        row_tl.setSpacing(8)
+        lbl_tl = QLabel("时间条（只读，用来对照谁压着谁）")
+        lbl_tl.setObjectName("Hint")
+        row_tl.addWidget(lbl_tl)
+        row_tl.addStretch(1)
+        self.lbl_tl = QLabel()
+        self.lbl_tl.setObjectName("Hint")
+        row_tl.addWidget(self.lbl_tl)
+        root.addLayout(row_tl)
+        self.timeline = _ComboTimeline()
+        root.addWidget(self.timeline)
+
+        # ---- 选中项细节：裁剪 + 逐项随机 ----
+        det = QHBoxLayout()
+        det.setSpacing(8)
+        self.lbl_sel = QLabel("选中项：—")
+        self.lbl_sel.setObjectName("SectionLabel")
+        det.addWidget(self.lbl_sel)
+
+        self.spn_start = QSpinBox()
+        self.spn_start.setRange(0, 600000)
+        self.spn_start.setSingleStep(50)
+        self.spn_start.setSuffix(" ms")
+        self.spn_start.setPrefix("起点 ")
+        self.spn_start.setToolTip("从原音效的第几毫秒开始取；0 = 从头")
+        self.spn_start.setMinimumWidth(118)
+        det.addWidget(self.spn_start)
+
+        self.spn_len = QSpinBox()
+        self.spn_len.setRange(0, 600000)
+        self.spn_len.setSingleStep(50)
+        self.spn_len.setSuffix(" ms")
+        self.spn_len.setPrefix("长度 ")
+        self.spn_len.setSpecialValueText("长度 到结尾")
+        self.spn_len.setToolTip("只取这么长；0 = 一直放到结尾")
+        self.spn_len.setMinimumWidth(118)
+        det.addWidget(self.spn_len)
+
+        self.spn_rsemi = QDoubleSpinBox()
+        self.spn_rsemi.setRange(0.0, 12.0)
+        self.spn_rsemi.setSingleStep(0.5)
+        self.spn_rsemi.setDecimals(1)
+        self.spn_rsemi.setSuffix(" 半音")
+        self.spn_rsemi.setPrefix("随机变调 ±")
+        self.spn_rsemi.setToolTip("每次触发在这一项上随机加减，0 = 不变")
+        self.spn_rsemi.setMinimumWidth(136)
+        det.addWidget(self.spn_rsemi)
+
+        self.spn_rrate = QSpinBox()
+        self.spn_rrate.setRange(0, 50)
+        self.spn_rrate.setSingleStep(5)
+        self.spn_rrate.setSuffix(" %")
+        self.spn_rrate.setPrefix("随机变速 ±")
+        self.spn_rrate.setToolTip("每次触发在这一项上随机快慢，0 = 不变")
+        self.spn_rrate.setMinimumWidth(136)
+        det.addWidget(self.spn_rrate)
+
+        det.addStretch(1)
+        self.btn_preview_one = QPushButton("试听这一项")
+        self.btn_preview_one.setCursor(Qt.PointingHandCursor)
+        self.btn_preview_one.clicked.connect(self._preview_item)
+        det.addWidget(self.btn_preview_one)
+        self.btn_preview_from = QPushButton("从这行开始试听")
+        self.btn_preview_from.setCursor(Qt.PointingHandCursor)
+        self.btn_preview_from.setToolTip("从选中的这一项开始往后播，前面的跳过")
+        self.btn_preview_from.clicked.connect(self._preview_from_row)
+        det.addWidget(self.btn_preview_from)
+        root.addLayout(det)
+
+        # ---- 组合整体参数 ----
+        lbl_glob = QLabel("整体参数")
+        lbl_glob.setObjectName("SectionLabel")
+        self.spn_orate = self._pct_spin(50, 200, "速度", "全组合一起变速，乘在每项自己的速度上")
+        self.spn_osemi = QDoubleSpinBox()
+        self.spn_osemi.setRange(-24.0, 24.0)
+        self.spn_osemi.setSingleStep(1.0)
+        self.spn_osemi.setDecimals(1)
+        self.spn_osemi.setSuffix(" 半音")
+        self.spn_osemi.setPrefix("变调 ")
+        self.spn_osemi.setToolTip("全组合一起变调，叠在每项自己的变调上")
+        self.spn_osemi.setMinimumWidth(126)
+        self.spn_orrate = self._pct_spin(0, 80, "随机速度 ±", "每次触发整体随机快慢一点，全组合共用同一个值")
+        self.spn_osemi_r = QDoubleSpinBox()
+        self.spn_osemi_r.setRange(0.0, 12.0)
+        self.spn_osemi_r.setSingleStep(0.5)
+        self.spn_osemi_r.setDecimals(1)
+        self.spn_osemi_r.setSuffix(" 半音")
+        self.spn_osemi_r.setPrefix("随机变调 ±")
+        self.spn_osemi_r.setToolTip("每次触发整体随机变调一点，全组合共用同一个值")
+        self.spn_osemi_r.setMinimumWidth(142)
+        self.spn_cool = self._plain_spin(0, 60000, 50, " ms", "冷却 ", "触发后这么久之内再按无效，防连按叠成一团")
+        self.spn_voices = self._plain_spin(0, 16, 1, " 条", "最多同时 ", "同一条组合最多几条声音一起响，0 = 不限")
+
+        row_a = QHBoxLayout()
+        row_a.setSpacing(8)
+        row_a.addWidget(lbl_glob)
+        row_a.addWidget(self.spn_orate)
+        row_a.addWidget(self.spn_osemi)
+        row_a.addWidget(self.spn_orrate)
+        row_a.addWidget(self.spn_osemi_r)
+        row_a.addStretch(1)
+        root.addLayout(row_a)
+
+        lbl_lim = QLabel("限流")
+        lbl_lim.setObjectName("SectionLabel")
+        lbl_lim.setToolTip("防连按叠音：冷却时间内不再响应，同时发声数超了先掐最早的")
+        row_b = QHBoxLayout()
+        row_b.setSpacing(8)
+        row_b.addWidget(lbl_lim)
+        row_b.addWidget(self.spn_cool)
+        row_b.addWidget(self.spn_voices)
+        row_b.addWidget(QLabel("专属热键"))
+        self.key_combo = KeyBox(self.scfg.combo_setting(cdef.cid).hotkey, 128,
+                                allow_gamepad=True)
+        self.key_combo.setToolTip("这个组合不必占轮盘格子，单手一个键直接触发")
+        row_b.addWidget(self.key_combo)
+        row_b.addStretch(1)
+        hint = QLabel("整体参数叠在每项自己的参数上；逐项随机只抖那一项")
+        hint.setObjectName("Hint")
+        row_b.addWidget(hint)
+        root.addLayout(row_b)
+
+        # ---- 底部 ----
+        bottom = QHBoxLayout()
+        bottom.setSpacing(8)
+        self.lbl_total = QLabel()
+        self.lbl_total.setObjectName("Hint")
+        self.btn_undo = QPushButton("撤销")
+        self.btn_undo.setCursor(Qt.PointingHandCursor)
+        self.btn_undo.clicked.connect(self._undo)
+        self.btn_redo = QPushButton("重做")
+        self.btn_redo.setCursor(Qt.PointingHandCursor)
+        self.btn_redo.clicked.connect(self._redo)
+        bottom.addWidget(self.btn_undo)
+        bottom.addWidget(self.btn_redo)
+        self.btn_export = QPushButton("导出 WAV")
+        self.btn_export.setCursor(Qt.PointingHandCursor)
+        self.btn_export.setToolTip("把这条组合渲染成一条音频文件")
+        self.btn_export.clicked.connect(self._export_wav)
+        bottom.addWidget(self.btn_export)
+        bottom.addStretch(1)
+        b_all = QPushButton("试听整个组合")
+        b_all.setCursor(Qt.PointingHandCursor)
+        b_all.clicked.connect(self._preview_all)
+        bottom.addWidget(b_all)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(self.reject)
+        bottom.addWidget(bb)
+        root.addLayout(bottom)
+        root.addWidget(self.lbl_total)
+
+        if self.engine is None:
+            for w in (self.btn_preview_one, self.btn_preview_from, b_all, self.btn_export):
+                w.setEnabled(False)
+                w.setToolTip("引擎未就绪，暂时无法试听/导出")
+
+        # ---- 信号 ----
+        self.ed_name.textEdited.connect(self._push_name)
+        self.cmb_mode.currentIndexChanged.connect(self._push_mode)
+        self.spn_count.valueChanged.connect(self._push_params)
+        self.chk_shuffle.toggled.connect(self._push_params)
+        for w in (self.spn_orate, self.spn_osemi, self.spn_orrate,
+                  self.spn_osemi_r, self.spn_cool, self.spn_voices):
+            w.valueChanged.connect(self._push_combo_params)
+        self.key_combo.key_changed.connect(self._push_hotkey)
+        for w in (self.spn_start, self.spn_len):
+            w.valueChanged.connect(self._on_trim_changed)
+        for w in (self.spn_rsemi, self.spn_rrate):
+            w.valueChanged.connect(self._on_item_random_changed)
+
+        # Ctrl+Z / Ctrl+Y（Ctrl+Shift+Z 也认）
+        sc_undo = QShortcut(QKeySequence.StandardKey.Undo, self)
+        sc_undo.activated.connect(self._undo)
+        sc_redo = QShortcut(QKeySequence("Ctrl+Y"), self)
+        sc_redo.activated.connect(self._redo)
+        sc_redo2 = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
+        sc_redo2.activated.connect(self._redo)
+
+        self._sync_combo_widgets()
+        self.reload_table()
+        self._sync_mode_widgets()
+        self._sync_detail_bar()
+        self._sync_undo_buttons()
+        self._check_hotkey_conflict()
+
+    # ---- 小工具 ----
+    @staticmethod
+    def _pct_spin(lo: int, hi: int, prefix: str, tip: str) -> QSpinBox:
+        box = QSpinBox()
+        box.setRange(lo, hi)
+        box.setSingleStep(5)
+        box.setSuffix(" %")
+        box.setPrefix(prefix + " ")
+        box.setToolTip(tip)
+        box.setMinimumWidth(126)
+        return box
+
+    @staticmethod
+    def _plain_spin(lo: int, hi: int, step: int, suffix: str,
+                    prefix: str, tip: str) -> QSpinBox:
+        box = QSpinBox()
+        box.setRange(lo, hi)
+        box.setSingleStep(step)
+        box.setSuffix(suffix)
+        box.setPrefix(prefix)
+        box.setToolTip(tip)
+        box.setMinimumWidth(120)
+        return box
+
+    def _sound_names(self) -> list[str]:
+        """音效库里的全部音效（配置键：相对路径，子文件夹算在内）。"""
+        return [key for key, _p in sr.scan_sound_files()]
+
+    # ---- 音效搜索 ----
+    def _filter_sounds(self, text: str) -> None:
+        """边打边筛：只留匹配项，并把滚动条直接带到第一个命中上。
+
+        左侧列表宽度固定，音效一多就得翻好几屏才能找到目标。
+        所以搜索框不只是"过滤"，还要把视线直接送到第一个匹配的位置，
+        否则筛完还得自己往下翻，问题只解决了一半。
+        """
+        kw = (text or "").strip().lower()
+        first = None
+        for i in range(self.lst_sounds.count()):
+            it = self.lst_sounds.item(i)
+            hit = (not kw) or (kw in it.text().lower())
+            it.setHidden(not hit)
+            if hit and first is None:
+                first = it
+        self.lst_sounds.clearSelection()
+        if first is None:
+            return
+        self.lst_sounds.setCurrentItem(first)
+        self.lst_sounds.scrollToItem(first, QAbstractItemView.PositionAtCenter)
+
+    def _add_current_sound(self) -> None:
+        """搜索框里按回车 = 把当前选中的音效加进组合。"""
+        it = self.lst_sounds.currentItem()
+        if it is None or it.isHidden():
+            return
+        self._add_sound(it)
+
+
+    def _member_duration(self, it) -> float:
+        """这一项处理后的时长（秒）：裁剪后长度 ÷（这项速度 × 整体速度）。
+
+        变调也会改变长度，但那是重采样的副作用，量级不到一秒的零头，
+        这里按"变速"估算就够看时间条了；真正播放用的是实测长度。
+        """
+        base = sr.item_src_duration(it)
+        if base <= 0.0:
+            return 0.0
+        return base / max(0.01, float(it.rate) * float(self.cdef.rate))
+
+    # ---- 表格 ----
+    def reload_table(self) -> None:
+        """重建成员表。只在成员增删/换序/换模式时调用，改数值不重建。"""
+        prev = self._loading
+        self._loading = True
+        try:
+            sel = self._current_row()
+            self.table.setRowCount(0)
+            names = self._sound_names()
+            for row, it in enumerate(self.cdef.items):
+                self.table.insertRow(row)
+                num = QTableWidgetItem(str(row + 1))
+                num.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row, 0, num)
+
+                self.table.setCellWidget(row, 1, self._make_sound_box(row, it, names))
+
+                trig = QComboBox()
+                for t in TRIGS:
+                    trig.addItem(TRIG_LABEL.get(t, t), t)
+                # 第一项的触发点必须是"组合开始时"，否则它没有上一项可参照
+                if row == 0:
+                    trig.setCurrentIndex(max(0, trig.findData(TRIG_COMBO)))
+                    trig.setEnabled(False)
+                    trig.setToolTip("第一项固定在组合触发那一刻开始")
+                else:
+                    trig.setCurrentIndex(max(0, trig.findData(it.trig)))
+                    trig.currentIndexChanged.connect(
+                        lambda _i, r=row, w=trig: self._on_trig_changed(r, w)
+                    )
+                self.table.setCellWidget(row, 2, trig)
+
+                delay = QSpinBox()
+                delay.setRange(DELAY_MIN_MS, DELAY_MAX_MS)
+                delay.setSingleStep(50)
+                delay.setSuffix(" ms")
+                delay.setValue(int(it.delay_ms))
+                delay.setToolTip(
+                    "相对上面那个参照点的延迟。\n"
+                    "正数 = 晚一点开始；负数 = 提前开始（会压到上一项的尾巴上）"
+                )
+                delay.valueChanged.connect(lambda v, r=row: self._on_delay_changed(r, v))
+                self.table.setCellWidget(row, 3, delay)
+
+                gain = QSpinBox()
+                gain.setRange(0, 200)
+                gain.setSingleStep(5)
+                gain.setSuffix(" %")
+                gain.setValue(int(round(it.gain * 100)))
+                gain.valueChanged.connect(lambda v, r=row: self._on_gain_changed(r, v))
+                self.table.setCellWidget(row, 4, gain)
+
+                semi = QDoubleSpinBox()
+                semi.setRange(-24.0, 24.0)
+                semi.setSingleStep(1.0)
+                semi.setDecimals(1)
+                semi.setSuffix(" 半音")
+                semi.setValue(float(it.semitones))
+                semi.valueChanged.connect(lambda v, r=row: self._on_semi_changed(r, v))
+                self.table.setCellWidget(row, 5, semi)
+
+                rate = QSpinBox()
+                rate.setRange(50, 200)
+                rate.setSingleStep(5)
+                rate.setSuffix(" %")
+                rate.setValue(int(round(it.rate * 100)))
+                rate.setToolTip("只改快慢不改音调；两行同一音效可以做\"快版/慢版\"对照")
+                rate.valueChanged.connect(lambda v, r=row: self._on_rate_changed(r, v))
+                self.table.setCellWidget(row, 6, rate)
+
+                dur = QTableWidgetItem("")
+                dur.setFlags(Qt.ItemIsEnabled)
+                self.table.setItem(row, 7, dur)
+                self._refresh_dur_cell(row)
+            self.table.resizeRowsToContents()
+            if sel is not None and 0 <= sel < self.table.rowCount():
+                self.table.selectRow(sel)
+        finally:
+            self._loading = prev
+        self._update_total()
+
+    def _make_sound_box(self, row: int, it, names: list[str]) -> QComboBox:
+        """音效列做成下拉框：文件被删/改名后一眼能看见，也顺手能换掉。"""
+        box = QComboBox()
+        if not it.sound:
+            box.addItem("（未选音效）", "")
+        elif it.sound not in names:
+            box.addItem(f"⚠ 缺失：{Path(it.sound).stem}", it.sound)
+        for n in names:
+            # 带文件夹的显示成「整活/冰冰冰」，否则两首同名歌在列表里长得一样
+            box.addItem(Path(n).with_suffix("").as_posix(), n)
+        idx = box.findData(it.sound)
+        box.setCurrentIndex(max(0, idx))
+        if it.sound and it.sound not in names:
+            box.setToolTip("这个文件已经不在 sounds 目录里了：换一个，或者把文件放回去")
+        else:
+            box.setToolTip("换这一项用的音效")
+        box.currentIndexChanged.connect(
+            lambda _i, r=row, b=box: self._on_sound_changed(r, b)
+        )
+        return box
+
+    def _refresh_dur_cell(self, row: int) -> None:
+        it = self._item_at(row)
+        cell = self.table.item(row, 7)
+        if it is None or cell is None:
+            return
+        dur = self._member_duration(it)
+        if sr.lib_duration(it.sound) <= 0.0:
+            cell.setText("缺失")          # 文件不在 sounds 目录里
+            cell.setForeground(QColor("#a42f47"))
+        elif dur <= 0.0:
+            cell.setText("裁空了")        # 起点填到了结尾之后
+            cell.setForeground(QColor("#875219"))
+        else:
+            cell.setText(f"{dur:.2f} 秒")
+            cell.setForeground(QColor("#294b61"))
+
+    def _update_total(self) -> None:
+        """底部一句话 + 时间条：几项、多长、缺几项、会不会叠音。"""
+        items = self.cdef.items
+        if not items:
+            self.lbl_total.setText("还没有成员：左边双击音效加入")
+            self.lbl_tl.setText("")
+            self.timeline.set_spans([], 0.0)
+            return
+        plan = self._preview_plan()
+        spans: list[tuple[int, float, float, bool]] = []
+        total = 0.0
+        for i, start in plan:
+            dur = self._member_duration(items[i])
+            ok = dur > 0.0
+            spans.append((i, start, dur if ok else 0.0, ok))
+            total = max(total, start + (dur if ok else 0.0))
+        self.timeline.set_spans(spans, total)
+        self.lbl_tl.setText(f"总时长 {total:.2f} 秒")
+
+        miss = sum(1 for it in items if sr.lib_duration(it.sound) <= 0.0)
+        empty = sum(1 for it in items
+                    if sr.lib_duration(it.sound) > 0.0 and sr.item_src_duration(it) <= 0.0)
+        mode = COMBO_MODE_LABEL.get(self.cdef.mode, self.cdef.mode)
+        if self.cdef.mode == CM_STEP:
+            # 点击式一次只响 1 项，但时间条画的是完整一轮，
+            # 否则这里永远只有一根条，"谁压着谁"就看不出来了
+            text = (f"{len(items)} 项 · {mode} · 一整轮约 {total:.2f} 秒"
+                    f" · 每次点只响其中 1 项")
+        else:
+            text = (
+                f"{len(items)} 项 · {mode} · 按当前条件约 {total:.2f} 秒"
+                f" · {len(plan)} 项会响"
+            )
+        if self.cdef.mode == CM_ACC:
+            text += " · 第 N 次叠前 N 项"
+        if self.cdef.cooldown_ms:
+            text += f" · 冷却 {self.cdef.cooldown_ms} ms"
+        if self.cdef.max_voices:
+            text += f" · 最多同时 {self.cdef.max_voices} 条"
+        if miss:
+            text += f" · ⚠ {miss} 项文件缺失"
+        if empty:
+            text += f" · {empty} 项被裁空"
+        self.lbl_total.setText(text)
+
+    def _preview_plan(self) -> list[tuple[int, int]]:
+        """按当前设置算一遍排程（48kHz 换算，纯用来显示时间/项数）。
+
+        随机模式这里用"前 N 项"代表一次典型抽样：真随机会让总时长
+        每点一下就跳，数字看着让人心慌。
+        """
+        rate = 48000
+        durs = {i: self._member_duration(it) for i, it in enumerate(self.cdef.items)}
+        n = len(self.cdef.items)
+        if self.cdef.mode == CM_RAND:
+            order = list(range(min(max(1, int(self.cdef.count)), n)))
+        else:
+            # 顺序 / 点击 / 累加 都画完整一轮：点击式虽然一次只响 1 项，
+            # 但时间条要能看出各成员怎么接龙、谁压着谁
+            order = list(range(n))
+        return [(i, d / rate) for i, d in
+                sr.combo_plan(self.cdef.items, order, durs, rate)]
+
+    def _sync_mode_widgets(self) -> None:
+        rand = self.cdef.mode == CM_RAND
+        self.lbl_count.setVisible(rand)
+        self.spn_count.setVisible(rand)
+        self.chk_shuffle.setVisible(rand)
+        self.lbl_mode_tip.setText(COMBO_MODE_TIP.get(self.cdef.mode, ""))
+        if rand and len(self.cdef.items):
+            self.spn_count.setMaximum(max(1, len(self.cdef.items)))
+
+    def _sync_combo_widgets(self) -> None:
+        """把组合整体参数刷到控件上（不动 _loading 外的任何东西）。"""
+        prev = self._loading
+        self._loading = True
+        try:
+            self.spn_orate.setValue(int(round(float(self.cdef.rate) * 100)))
+            self.spn_osemi.setValue(float(self.cdef.semitones))
+            self.spn_orrate.setValue(int(round(float(self.cdef.rand_rate) * 100)))
+            self.spn_osemi_r.setValue(float(self.cdef.rand_semi))
+            self.spn_cool.setValue(int(self.cdef.cooldown_ms))
+            self.spn_voices.setValue(int(self.cdef.max_voices))
+            self.key_combo.set_key(self.scfg.combo_setting(self.cdef.cid).hotkey)
+        finally:
+            self._loading = prev
+
+    def _sync_detail_bar(self) -> None:
+        """选中行 -> 细节条（裁剪 + 逐项随机）。没选中就禁用。"""
+        row = self._current_row()
+        it = self._item_at(row) if row is not None else None
+        prev = self._loading
+        self._loading = True
+        try:
+            for w in (self.spn_start, self.spn_len, self.spn_rsemi, self.spn_rrate):
+                w.setEnabled(it is not None)
+            if it is None:
+                self.lbl_sel.setText("选中项：—")
+                self.spn_start.setValue(0)
+                self.spn_len.setValue(0)
+                self.spn_rsemi.setValue(0.0)
+                self.spn_rrate.setValue(0)
+            else:
+                src = sr.item_src_duration(it)
+                full = sr.lib_duration(it.sound)
+                self.lbl_sel.setText(f"选中项 #{row + 1}")
+                # 上限取"音效长度"和"已经填的起点"里更大的那个：
+                # 换过更短的音效之后，控件不会把已有的值悄悄夹小、显示得跟实际不一致
+                self.spn_start.setMaximum(max(int(it.clip_start_ms), int(full * 1000)))
+                self.spn_len.setMaximum(max(int(it.clip_len_ms), int(full * 1000)))
+                self.spn_start.setValue(int(it.clip_start_ms))
+                self.spn_len.setValue(int(it.clip_len_ms))
+                self.spn_rsemi.setValue(float(it.rand_semi))
+                self.spn_rrate.setValue(int(round(float(it.rand_rate) * 100)))
+                tip = f"原长 {full:.2f} 秒"
+                if src > 0:
+                    tip += f"，裁完剩 {src:.2f} 秒"
+                self.spn_start.setToolTip(tip)
+        finally:
+            self._loading = prev
+
+    # ---- 撤销 / 重做 ----
+    def _snapshot(self) -> str:
+        return json.dumps(asdict(self.cdef), ensure_ascii=False, sort_keys=True)
+
+    def _push_undo(self) -> None:
+        if self._loading:
+            return
+        snap = self._snapshot()
+        if self._undo_stack and self._undo_stack[-1] == snap:
+            return
+        self._undo_stack.append(snap)
+        if len(self._undo_stack) > 80:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self._sync_undo_buttons()
+
+    def _restore(self, snap: str) -> None:
+        """把 cdef 就地还原成快照里的样子。
+
+        必须原地改（不能换对象）：SettingsWindow 和 sounds.json 都握着
+        同一个 ComboDef 实例，换掉就等于没保存。
+        """
+        try:
+            data = json.loads(snap)
+        except Exception:
+            return
+        allowed = ComboItem.__dataclass_fields__
+        prev = self._loading
+        self._loading = True
+        try:
+            self.cdef.name = str(data.get("name") or self.cdef.name)
+            self.cdef.mode = str(data.get("mode") or CM_SEQ)
+            self.cdef.count = int(data.get("count", self.cdef.count))
+            self.cdef.shuffle = bool(data.get("shuffle", self.cdef.shuffle))
+            self.cdef.rate = float(data.get("rate", 1.0))
+            self.cdef.semitones = float(data.get("semitones", 0.0))
+            self.cdef.rand_rate = float(data.get("rand_rate", 0.0))
+            self.cdef.rand_semi = float(data.get("rand_semi", 0.0))
+            self.cdef.cooldown_ms = int(data.get("cooldown_ms", 0))
+            self.cdef.max_voices = int(data.get("max_voices", 0))
+            self.cdef.items = [
+                ComboItem(**{k: v for k, v in raw.items() if k in allowed}).clamped()
+                for raw in (data.get("items") or [])
+                if isinstance(raw, dict)
+            ]
+            self.ed_name.setText(self.cdef.name)
+            self.cmb_mode.setCurrentIndex(max(0, self.cmb_mode.findData(self.cdef.mode)))
+            self.spn_count.setValue(int(self.cdef.count))
+            self.chk_shuffle.setChecked(bool(self.cdef.shuffle))
+            self._sync_combo_widgets()
+            self.reload_table()
+            self._sync_mode_widgets()
+            self._sync_detail_bar()
+            self._update_total()
+        finally:
+            self._loading = prev
+        self.setWindowTitle(f"编辑组合：{self.cdef.name}")
+        self._commit()
+
+    def _undo(self) -> None:
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(self._snapshot())
+        self._restore(self._undo_stack.pop())
+        self._sync_undo_buttons()
+
+    def _redo(self) -> None:
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(self._snapshot())
+        self._restore(self._redo_stack.pop())
+        self._sync_undo_buttons()
+
+    def _sync_undo_buttons(self) -> None:
+        self.btn_undo.setEnabled(bool(self._undo_stack))
+        self.btn_redo.setEnabled(bool(self._redo_stack))
+        self.btn_undo.setToolTip(
+            f"Ctrl+Z（还能退 {len(self._undo_stack)} 步）" if self._undo_stack
+            else "没有可撤销的改动了"
+        )
+        self.btn_redo.setToolTip(
+            f"Ctrl+Y（还能重做 {len(self._redo_stack)} 步）" if self._redo_stack
+            else "没有可重做的改动了"
+        )
+
+    # ---- 顶部参数 ----
+    def _push_name(self) -> None:
+        if self._loading:
+            return
+        self._push_undo()
+        self.cdef.name = self.ed_name.text().strip() or "未命名组合"
+        self.setWindowTitle(f"编辑组合：{self.cdef.name}")
+        self._commit()
+
+    def _push_mode(self) -> None:
+        if self._loading:
+            return
+        self._push_undo()
+        self.cdef.mode = str(self.cmb_mode.currentData() or CM_SEQ)
+        self._sync_mode_widgets()
+        self.reload_table()
+        self._commit()
+
+    def _push_params(self) -> None:
+        if self._loading:
+            return
+        self._push_undo()
+        self.cdef.count = int(self.spn_count.value())
+        self.cdef.shuffle = bool(self.chk_shuffle.isChecked())
+        self._update_total()
+        self._commit()
+
+    def _push_combo_params(self) -> None:
+        if self._loading:
+            return
+        self._push_undo()
+        self.cdef.rate = max(0.5, min(2.0, self.spn_orate.value() / 100.0))
+        self.cdef.semitones = round(float(self.spn_osemi.value()), 1)
+        self.cdef.rand_rate = self.spn_orrate.value() / 100.0
+        self.cdef.rand_semi = round(float(self.spn_osemi_r.value()), 1)
+        self.cdef.cooldown_ms = int(self.spn_cool.value())
+        self.cdef.max_voices = int(self.spn_voices.value())
+        # 整体速度变了，每一项的时长都得跟着变
+        for row in range(self.table.rowCount()):
+            self._refresh_dur_cell(row)
+        self._update_total()
+        self._commit()
+
+    def _push_hotkey(self, key: str) -> None:
+        if self._loading:
+            return
+        self.scfg.combo_setting(self.cdef.cid).hotkey = sr.norm_spec(key)
+        self._check_hotkey_conflict()
+        self._commit()
+
+    def _check_hotkey_conflict(self) -> None:
+        """撞键要说出来，不能让用户按了半天没反应还以为坏了。
+
+        自己的键不可能被别人抢走 —— 绑定表是按"先到先得"建的，
+        呼出轮盘用的键优先级最高，所以这里必须显式告诉用户。
+        """
+        key = sr.norm_spec(self.key_combo.key_name)
+        if not key:
+            self.key_combo.clear_conflict()
+            return
+        wheel_key = sr.norm_spec((self.cfg or {}).get("hotkey", ""))
+        if wheel_key and key == wheel_key:
+            self.key_combo.mark_conflict(
+                f"{key_label(key)} 是呼出轮盘的键，这个组合按不出来")
+            return
+        mine = self.scfg.combo_key(self.cdef.cid)
+        for name in self.scfg.order:
+            if name == mine:
+                continue
+            hk = sr.norm_spec(self.scfg.setting(name).hotkey)
+            if hk and hk == key:
+                self.key_combo.mark_conflict(
+                    f"{key_label(key)} 已经被「{self.scfg.display_name(name)}」占用"
+                )
+                return
+        self.key_combo.clear_conflict()
+
+    # ---- 成员操作 ----
+    def _add_sound(self, item) -> None:
+        if len(self.cdef.items) >= MAX_COMBO_ITEMS:
+            QMessageBox.information(self, "组合音效",
+                                    f"一个组合最多 {MAX_COMBO_ITEMS} 项。")
+            return
+        name = str(item.data(Qt.UserRole) or "")
+        if not name:
+            return
+        self._push_undo()
+        it = ComboItem(sound=name, trig=TRIG_PREV_END, delay_ms=0).clamped()
+        self.cdef.items.append(it)
+        self.reload_table()
+        self._sync_mode_widgets()
+        self.table.selectRow(len(self.cdef.items) - 1)
+        self._sync_detail_bar()
+        self._commit()
+
+    def _remove_item(self) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        self._push_undo()
+        self.cdef.items.pop(row)
+        self.reload_table()
+        self._sync_mode_widgets()
+        self._sync_detail_bar()
+        self._commit()
+
+    def _move_up(self) -> None:
+        self._move(-1)
+
+    def _move_down(self) -> None:
+        self._move(1)
+
+    def _move(self, delta: int) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        dst = row + delta
+        if not (0 <= dst < len(self.cdef.items)):
+            return
+        self._push_undo()
+        items = self.cdef.items
+        items[row], items[dst] = items[dst], items[row]
+        self.reload_table()
+        self.table.selectRow(dst)
+        self._sync_detail_bar()
+        self._commit()
+
+    def _current_row(self) -> int | None:
+        model = self.table.selectionModel()
+        rows = model.selectedRows() if model is not None else []
+        if rows:
+            r = rows[0].row()
+            if 0 <= r < len(self.cdef.items):
+                return r
+        return None
+
+    def _progress_copy(self) -> None:
+        """重复递进生成器：一次生成"逐级升调/加速/延后"的一串。"""
+        row = self._current_row()
+        if row is None:
+            QMessageBox.information(self, "递进复制", "先在表格里选一项当模板。")
+            return
+        room = MAX_COMBO_ITEMS - len(self.cdef.items)
+        if room <= 0:
+            QMessageBox.information(self, "递进复制",
+                                    f"一个组合最多 {MAX_COMBO_ITEMS} 项，已经满了。")
+            return
+        dlg = _ProgressDialog(self)
+        dlg.spn_copies.setMaximum(max(1, room))
+        dlg.spn_copies.setValue(min(2, room))
+        if dlg.exec() != QDialog.Accepted:
+            return
+        copies, dsemi, drate, ddelay = dlg.values()
+        copies = max(1, min(copies, room))
+
+        self._push_undo()
+        base = self.cdef.items[row]
+        new_items = []
+        for k in range(1, copies + 1):
+            it = ComboItem(**{k2: v for k2, v in asdict(base).items()
+                              if k2 in ComboItem.__dataclass_fields__})
+            it.semitones = max(-24.0, min(24.0, base.semitones + dsemi * k))
+            it.rate = max(0.5, min(2.0, base.rate + drate / 100.0 * k))
+            it.delay_ms = max(DELAY_MIN_MS, min(DELAY_MAX_MS, base.delay_ms + ddelay * k))
+            new_items.append(it.clamped())
+        self.cdef.items[row + 1:row + 1] = new_items
+        self.reload_table()
+        self._sync_mode_widgets()
+        self.table.selectRow(row + copies)
+        self._sync_detail_bar()
+        self._commit()
+
+    # ---- 逐项参数 ----
+    def _item_at(self, row: int):
+        if row is not None and 0 <= row < len(self.cdef.items):
+            return self.cdef.items[row]
+        return None
+
+    def _on_sound_changed(self, row: int, box: QComboBox) -> None:
+        if self._loading:
+            return
+        it = self._item_at(row)
+        if it is None:
+            return
+        name = str(box.currentData() or "")
+        if name == it.sound:
+            return
+        self._push_undo()
+        it.sound = name
+        # 下拉框是在自己的信号回调里被改的：这里重建表格会把正在发信号的
+        # 控件删掉，Qt 里会直接崩。推迟到下一轮事件循环再重建。
+        QTimer.singleShot(0, lambda r=row: self._after_sound_change(r))
+
+    def _after_sound_change(self, row: int) -> None:
+        self.reload_table()
+        if 0 <= row < self.table.rowCount():
+            self.table.selectRow(row)
+        self._sync_detail_bar()
+        self._commit()
+
+    def _on_trig_changed(self, row: int, box: QComboBox) -> None:
+        if self._loading:
+            return
+        it = self._item_at(row)
+        if it is None:
+            return
+        self._push_undo()
+        it.trig = str(box.currentData() or TRIG_PREV_END)
+        self._update_total()
+        self._commit()
+
+    def _on_delay_changed(self, row: int, value: int) -> None:
+        if self._loading:
+            return
+        it = self._item_at(row)
+        if it is None:
+            return
+        self._push_undo()
+        it.delay_ms = int(value)
+        self._update_total()
+        self._commit()
+
+    def _on_gain_changed(self, row: int, value: int) -> None:
+        if self._loading:
+            return
+        it = self._item_at(row)
+        if it is None:
+            return
+        self._push_undo()
+        it.gain = max(0.0, min(2.0, value / 100.0))
+        self._commit()
+
+    def _on_semi_changed(self, row: int, value: float) -> None:
+        if self._loading:
+            return
+        it = self._item_at(row)
+        if it is None:
+            return
+        self._push_undo()
+        it.semitones = round(float(value), 1)
+        self._refresh_dur_cell(row)
+        self._update_total()
+        self._commit()
+
+    def _on_rate_changed(self, row: int, value: int) -> None:
+        if self._loading:
+            return
+        it = self._item_at(row)
+        if it is None:
+            return
+        self._push_undo()
+        it.rate = max(0.5, min(2.0, value / 100.0))
+        self._refresh_dur_cell(row)
+        self._update_total()
+        self._commit()
+
+    def _on_trim_changed(self) -> None:
+        row = self._current_row()
+        it = self._item_at(row)
+        if self._loading or it is None:
+            return
+        self._push_undo()
+        it.clip_start_ms = int(self.spn_start.value())
+        it.clip_len_ms = int(self.spn_len.value())
+        self._refresh_dur_cell(row)
+        self._update_total()
+        self._commit()
+
+    def _on_item_random_changed(self) -> None:
+        row = self._current_row()
+        it = self._item_at(row)
+        if self._loading or it is None:
+            return
+        self._push_undo()
+        it.rand_semi = round(float(self.spn_rsemi.value()), 1)
+        it.rand_rate = self.spn_rrate.value() / 100.0
+        self._commit()
+
+    # ---- 试听 / 导出 ----
+    def _preview_item(self) -> None:
+        row = self._current_row()
+        if row is None:
+            QMessageBox.information(self, "试听", "先在表格里选一项。")
+            return
+        it = self._item_at(row)
+        if it is None:
+            return
+        if self.engine is None or not self.engine.play_preview(it):
+            QMessageBox.warning(self, "试听", "这项的音效文件不在 sounds 目录里。")
+
+    def _preview_from_row(self) -> None:
+        row = self._current_row()
+        if row is None:
+            QMessageBox.information(self, "试听", "先在表格里选一项。")
+            return
+        if self.engine is None:
+            return
+        if not self.engine.play_combo(self.cdef, from_row=row):
+            QMessageBox.warning(self, "试听", "这一行往后都没有能出声的成员。")
+
+    def _preview_all(self) -> None:
+        if self.engine is None:
+            return
+        if not self.cdef.items:
+            QMessageBox.information(self, "试听", "组合里还没有成员。")
+            return
+        # 推进式模式（按顺序点击 / 累加）下，"整个组合"指的是完整一轮：
+        # 走 from_row=0 的全量分支，顺带不推进游标，试听不会打乱真实接龙位置
+        if self.cdef.steps_per_trigger():
+            self.engine.play_combo(self.cdef, from_row=0)
+        else:
+            self.engine.play_combo(self.cdef)
+
+    def _export_wav(self) -> None:
+        if self.engine is None:
+            return
+        if not self.cdef.items:
+            QMessageBox.information(self, "导出", "组合里还没有成员。")
+            return
+        safe = "".join(c for c in self.cdef.name if c not in '\\/:*?"<>|').strip()
+        default = str(Path(self.scfg.path).parent / f"{safe or 'combo'}.wav")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出为 WAV", default, "WAV 音频 (*.wav)"
+        )
+        if not path:
+            return
+        ok, msg = self.engine.export_combo_wav(self.cdef, path)
+        if ok:
+            QMessageBox.information(self, "导出", msg)
+        else:
+            QMessageBox.warning(self, "导出", msg)
+
+    def _commit(self) -> None:
+        self.scfg.save()
+        self.changed.emit()
+
+
+class HotkeyPage(QWidget):
+    """快捷键：轮盘热键 + 快捷动作。"""
+
+    changed = Signal()
+
+    def __init__(self, cfg: dict, bank: sr.SoundBank, scfg=None) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.scfg = scfg
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+        body = QWidget()
+        scroll.setWidget(body)
+        root = QGridLayout(body)
+        root.setContentsMargins(0, 0, 5, 0)
+        root.setHorizontalSpacing(16)
+        root.setVerticalSpacing(14)
+        root.setColumnStretch(0, 1)
+        root.setColumnStretch(1, 1)
+
+        card1, l1 = _card("轮盘")
+        self.key_wheel = KeyBox(str(cfg.get("hotkey", "y")))
+        l1.addWidget(_row("呼出轮盘", self.key_wheel, "长按弹出"))
+        self.hold = QSpinBox()
+        self.hold.setRange(50, 1000)
+        self.hold.setSingleStep(10)
+        self.hold.setValue(int(cfg.get("hold_ms", 180)))
+        self.hold.setSuffix(" ms")
+        self.hold.setFixedWidth(110)
+        l1.addWidget(_row("长按时长", self.hold, "低于此值不弹出"))
+
+        self.tap = QComboBox()
+        for label, value in (
+            ("播放选中 / 上次那个", "auto"),
+            ("什么都不做", "none"),
+            ("顺序播放下一个", "next"),
+        ):
+            self.tap.addItem(label, value)
+        cur = str(cfg.get("tap_action", "auto") or "auto")
+        if cur == "repeat_last":
+            cur = "auto"       # 老配置：这个选项并进「播放选中 / 上次那个」了
+        idx = self.tap.findData(cur)
+        self.tap.setCurrentIndex(max(0, idx))
+        l1.addWidget(_row("轻按热键", self.tap, "短按不弹轮盘时执行"))
+
+        self.chk_preselect = QCheckBox("预选模式：长按只选中，再单击才播放")
+        self.chk_preselect.setChecked(bool(cfg.get("preselect_mode", False)))
+        self.chk_preselect.setToolTip(
+            "勾上之后：长按呼出键弹轮盘、划到某一格松手，只是把它「选中」，不出声；\n"
+            "然后再单击一次呼出键（或那套轮盘的专属键）才播放它。\n"
+            "适合边打边挑：先瞄好要放哪个，等真需要的时候再按一下。"
+        )
+        l1.addWidget(self.chk_preselect)
+        tip = QLabel(
+            "点击按键框后按下按键或组合键。支持鼠标按键和滚轮，双击按键框可绑定鼠标左键。"
+        )
+        tip.setObjectName("Hint")
+        tip.setWordWrap(True)
+        l1.addWidget(tip)
+        root.addWidget(card1, 0, 0, 2, 1, Qt.AlignTop)
+
+        card2, l2 = _card("快捷动作")
+        # v0.9.3：「重复上一个」这一行删掉了 —— 单击呼出轮盘键就是干这个的
+        # （而且是按轮盘分别记的），再留一个独立键只是让人多一处要想的地方。
+        self.key_cycle = KeyBox(str(cfg.get("cycle_key", "") or ""))
+        l2.addWidget(_row("顺序播放", self.key_cycle, "每按一次播下一个"))
+
+        self.key_switch = KeyBox(str(cfg.get("switch_key", "") or ""))
+        l2.addWidget(_row("切换轮盘", self.key_switch,
+                          "按住弹出各套轮盘，划到哪套松手切过去"))
+        root.addWidget(card2, 0, 1)
+
+        card_start, l_start = _card("启动")
+        self.chk_autosettings = QCheckBox("打开软件时自动显示这个窗口")
+        self.chk_autosettings.setChecked(bool(cfg.get("open_settings_on_start", True)))
+        l_start.addWidget(self.chk_autosettings)
+        hint_start = QLabel(
+            "只在托盘运行时，双击托盘图标打开工作台。"
+        )
+        hint_start.setObjectName("Hint")
+        hint_start.setWordWrap(True)
+        l_start.addWidget(hint_start)
+
+        # ---- 开机自启 ----
+        self.chk_autostart = QCheckBox("开机自动启动")
+        self.chk_autostart.setChecked(bool(cfg.get("autostart", False)))
+        if not sr.autostart_supported():
+            self.chk_autostart.setEnabled(False)
+            self.chk_autostart.setToolTip(
+                "只有打包成 exe 的版本支持开机自启；源码模式运行时不用这个。"
+            )
+        l_start.addWidget(self.chk_autostart)
+        hint_auto = QLabel(
+            "在登录 Windows 时启动 Jinkra。"
+        )
+        hint_auto.setObjectName("Hint")
+        hint_auto.setWordWrap(True)
+        l_start.addWidget(hint_auto)
+        root.addWidget(card_start, 1, 1)
+
+        self.lbl_conflict = QLabel()
+        self.lbl_conflict.setWordWrap(True)
+        self.lbl_conflict.setStyleSheet("color:#a42f47;font-size:12px;")
+        self.lbl_conflict.hide()
+        root.addWidget(self.lbl_conflict, 2, 0, 1, 2)
+        root.setRowStretch(3, 1)
+
+        self.key_wheel.key_changed.connect(lambda _v: self._push())
+        self.key_cycle.key_changed.connect(lambda _v: self._push())
+        self.key_switch.key_changed.connect(lambda _v: self._push())
+        self.hold.valueChanged.connect(self._push)
+        self.tap.currentIndexChanged.connect(self._push)
+        self.chk_autosettings.toggled.connect(self._push)
+        self.chk_autostart.toggled.connect(self._on_autostart)
+        self.refresh_conflicts()
+
+    def _bindings(self) -> list[tuple[str, KeyBox]]:
+        return [
+            ("呼出轮盘", self.key_wheel),
+            ("顺序播放", self.key_cycle),
+            ("切换轮盘", self.key_switch),
+        ]
+
+    def refresh_conflicts(self) -> None:
+        """把"这个键已经被别人占了"显示出来。
+
+        轮询器遇到重复绑定时会跳过后者，用户不知道就以为功能坏了
+        （真实案例：顺序播放和呼出轮盘都绑成了 Y，按 Y 什么都不发生）。
+
+        v0.9 起**音效之间共用一个键是正常用法**：像"长按左键播 AAA、
+        松手左键播 B"本来就该挂在同一个键上，各自按自己的触发方式走。
+        所以只在"音效撞上四个全局键"时才提示——那种情况音效会被让路。
+        """
+        globals_ = [(label, box.key_name) for label, box in self._bindings()
+                    if box.key_name]
+        # 每个键上挂了哪些音效（同一键多个是正常的，这里只是收集）
+        sounds: dict[str, list[str]] = {}
+        if self.scfg is not None:
+            # 当前轮盘上的 + 勾了「全局通用」的（它们在任何轮盘上都会响应，
+            # 撞上呼出轮盘这类全局键一样会被让路，所以必须一起算）
+            groups: dict[str, list[str]] = {}
+            try:
+                for k, v in (self.scfg.hotkey_groups() or {}).items():
+                    groups.setdefault(k, []).extend(v)
+                for k, v in (self.scfg.global_hotkey_groups() or {}).items():
+                    bucket = groups.setdefault(k, [])
+                    for n in v:
+                        if n not in bucket:
+                            bucket.append(n)
+            except Exception:
+                groups = {}
+            for key, names in groups.items():
+                hk = sr.norm_spec(key)
+                if not hk:
+                    continue
+                for n in names:
+                    sounds.setdefault(hk, []).append(self.scfg.display_name(n))
+
+        # 1) 全局键之间互相撞：只有第一个生效（老规矩）
+        by_key: dict[str, list[str]] = {}
+        for label, k in globals_:
+            by_key.setdefault(k, []).append(label)
+
+        lines: list[str] = []
+        boxmap = dict(self._bindings())
+        for label, k in globals_:
+            box = boxmap[label]
+            if not k:
+                box.clear_conflict()
+                continue
+            mates = by_key.get(k, [])
+            mine = mates.index(label) if label in mates else 0
+            hit: list[str] = []
+            if mine > 0:
+                hit.append(f"「{key_label(k)}」已经被{mates[0]}占用，这里不会生效")
+            if k in sounds:
+                # 全局键优先，音效会让路
+                hit.append(
+                    f"「{key_label(k)}」上还挂着 {len(sounds[k])} 个音效"
+                    f"（{'、'.join(sounds[k][:3])}{'…' if len(sounds[k]) > 3 else ''}），"
+                    "全局键优先，这些音效按不出来"
+                )
+            if hit:
+                box.mark_conflict("；".join(hit) + "。换一个键，或者把那边改掉。")
+            else:
+                box.clear_conflict()
+
+        for k, names in by_key.items():
+            if len(names) > 1:
+                lines.append("按键冲突：" + "、".join(names)
+                             + f" 都绑成了「{key_label(k)}」，只有第一个生效。")
+        # 音效之间共用同一个键不算冲突，但值得说一声，免得用户以为自己设错了
+        shared = {k: v for k, v in sounds.items() if len(v) > 1 and k not in by_key}
+        for k, names in shared.items():
+            lines.append("共用「" + key_label(k) + "」：" + "、".join(names)
+                         + "（各自的触发方式分别生效，这是允许的）")
+
+        if lines:
+            self.lbl_conflict.setText("\n".join(lines))
+            self.lbl_conflict.setStyleSheet("color:#a42f47;font-size:12px;")
+            self.lbl_conflict.show()
+        else:
+            self.lbl_conflict.hide()
+
+    def _on_autostart(self, on: bool) -> None:
+        """开关自启：注册表立刻生效，配置里也记一份（下次启动对齐用）。"""
+        self.cfg["autostart"] = bool(on)
+        ok = sr.set_autostart(bool(on))
+        if not ok:
+            # 写注册表失败（比如被策略拦了）：把勾退回去，别让界面说谎
+            self.chk_autostart.blockSignals(True)
+            self.chk_autostart.setChecked(not on)
+            self.chk_autostart.blockSignals(False)
+            self.cfg["autostart"] = not bool(on)
+            QMessageBox.warning(
+                self, "开机自启",
+                "写入系统注册表失败，开关没有生效。\n"
+                "可能被安全软件或组策略拦住了，详情看 jinkra_roulette.log。"
+            )
+        self.changed.emit()
+
+    def _push(self) -> None:
+        if not self.key_wheel.key_name:
+            # 呼出键必须有一个：清空就把框退回上一个可用值。
+            # 否则会出现"框里空着、实际上还是 Y"的鬼状态，看着像清除没生效。
+            self.key_wheel.set_key(str(self.cfg.get("hotkey", "y") or "y"))
+        self.cfg["hotkey"] = self.key_wheel.key_name or "y"
+        self.cfg["hold_ms"] = int(self.hold.value())
+        self.cfg["cycle_key"] = self.key_cycle.key_name
+        self.cfg["switch_key"] = self.key_switch.key_name
+        self.cfg["tap_action"] = str(self.tap.currentData() or "auto")
+        self.cfg["preselect_mode"] = bool(self.chk_preselect.isChecked())
+        self.cfg["open_settings_on_start"] = bool(self.chk_autosettings.isChecked())
+        self.refresh_conflicts()
+        self.changed.emit()
+
+
+class WheelPage(QWidget):
+    """轮盘外观、手感、配色，以及"存了哪几套轮盘"。
+
+    配色分两层：上面那张卡片调的是**应用主题色**（界面高亮），
+    下面轮盘库每套自带一个颜色 —— 两者互不影响，可以做到
+    "界面是绿的，这套轮盘是骚粉的"。
+    """
+
+    changed = Signal()
+    palette_changed = Signal(str)        # 应用主题色变了（#rrggbb）
+    wheel_color_changed = Signal(str)    # 当前轮盘颜色变了（"" = 跟随主题色）
+    wheel_switch = Signal(str)           # 请求切到某套轮盘（wid）
+
+    def __init__(self, cfg: dict, scfg=None) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.scfg = scfg
+        # 和「麦克风」「说明」两页一样套一层滚动区。
+        # 以前这里是 root = QVBoxLayout(self) 直接铺在标签页上，
+        # 卡片一多（配色 + 轮盘库 + 手感）窗口不够高时下面就被切掉，
+        # 而且没有滚动条可以拉，等于永远看不到——轮盘存多了尤其明显。
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea()
+        self.settings_scroll = scroll
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+
+        body = QWidget()
+        root = QVBoxLayout(body)
+        root.setContentsMargins(0, 12, 6, 0)
+        root.setSpacing(12)
+        scroll.setWidget(body)
+
+        card, lay = _card("外观")
+
+        self.radius = self._slider(int(cfg.get("wheel_radius", 180)), 120, 280, " px")
+        lay.addWidget(_row("直径", self.radius, "内圈的直径"))
+        self.inner = self._slider(int(float(cfg.get("inner_ratio", 0.42)) * 100), 25, 70, " %")
+        lay.addWidget(_row("中空比例", self.inner, "中心留白，也是「不选中」的范围"))
+        # 整体大小：内圈、中空、外圈厚度、扇区文字、中心提示一起等比缩放。
+        # 和上面「直径」是叠加关系：直径决定基准尺寸，这一项决定整体放大多少。
+        self.scale = self._slider(int(float(cfg.get("wheel_scale", 1.0)) * 100), 70, 140, " %")
+        self.scale.setToolTip(
+            "整个轮盘等比放大/缩小：内圈、外圈厚度、扇区上的文字、中心提示\n"
+            "会一起变，选中判定的范围也跟着变，不会出现「看着大、选着小」。\n"
+            "100% 是标准大小；屏幕小就用小一点，4K 屏看不清可以调大。\n"
+            "右边那个预览不跟着这一项涨缩（它按 100% 画），实际大小以游戏内为准。"
+        )
+        lay.addWidget(_row("整体大小", self.scale, "内外圈和文字一起缩放"))
+        self.opacity = self._slider(int(float(cfg.get("opacity", 0.94)) * 100), 40, 100, " %")
+        lay.addWidget(_row("不透明度", self.opacity, "暂停提示也用这个值"))
+        # 内圈装满 8 个之后轮盘外面会再长一圈，这一项控制那一圈的厚度。
+        # 内圈尺寸不受影响，所以"直径"仍然是内圈的直径。
+        self.outer_thick = self._slider(
+            int(cfg.get("outer_thickness", 60)), 24, 140, " px"
+        )
+        lay.addWidget(_row("外圈厚度", self.outer_thick, "内圈满 8 个后才有外圈"))
+
+        self.chk_names = QCheckBox("在扇区上显示音效名")
+        self.chk_names.setChecked(bool(cfg.get("show_names", True)))
+        lay.addWidget(self.chk_names)
+
+        self.chk_anim = QCheckBox("开启动画")
+        self.chk_anim.setChecked(bool(cfg.get("animations", True)))
+        self.chk_anim.setToolTip(
+            "轮盘弹出时的展开、释放音效时选中那格飞出去、暂停/恢复的提示，\n"
+            "都走这一个开关。关掉之后全部变成瞬间出现、瞬间消失——\n"
+            "晕动或者嫌动画挡视线就关掉。"
+        )
+        lay.addWidget(self.chk_anim)
+
+        root.addWidget(card)
+
+        # ---------------- 停止与淡出 ----------------
+        card_f, lay_f = _card("停止与淡出")
+        self.chk_stop_fade = QCheckBox("停止 / 暂停时让声音慢慢淡出")
+        self.chk_stop_fade.setChecked(bool(cfg.get("stop_fade_enabled", False)))
+        self.chk_stop_fade.setToolTip(
+            "关：停止就是把声音收掉，只留 12 毫秒的防爆音过渡（听不出来）。\n"
+            "开：按下面的时长把音量一路降到底，像余音散掉。\n"
+            "影响所有\"停\"：轮盘中心松手、托盘停止、条件停止键、长按松手。\n"
+            "只有「连击时停掉上一次」不动——那一下是给新的一声腾地方，淡久了会糊。"
+        )
+        lay_f.addWidget(self.chk_stop_fade)
+        self.stop_fade = self._slider(int(cfg.get("stop_fade_ms", 400)), 60, 2000, " ms")
+        self.stop_fade.setToolTip("淡出要花多久：60ms 像轻轻一收，2 秒是很长的拖尾")
+        lay_f.addWidget(_row("淡出时长", self.stop_fade, "越长余音拖得越久"))
+        self.chk_stop_fade.toggled.connect(self._sync_stop_fade_enabled)
+        root.addWidget(card_f)
+        self._sync_stop_fade_enabled(self.chk_stop_fade.isChecked())
+
+        # ---------------- 配色：主题色（界面）+ 轮盘色（每套各自一个） ----------------
+        card_p, lay_p = _card("配色")
+
+        self.theme_dot = QPushButton()
+        self.theme_dot.setFixedSize(52, 28)
+        self.theme_dot.setCursor(Qt.PointingHandCursor)
+        self.theme_dot.setToolTip("自定义界面高亮和滑块颜色")
+        self.theme_dot.clicked.connect(self._pick_theme_color)
+        theme_row = QHBoxLayout()
+        theme_row.setSpacing(4)
+        theme_row.addWidget(self.theme_dot)
+        for key in ("studio", "teal", "green", "orange", "blue", "purple"):
+            b = QPushButton(theme.PALETTE_LABELS.get(key, key))
+            b.setFixedSize(34, 28)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet(
+                "QPushButton{background:%s;color:#0d0f13;border:none;"
+                "border-radius:8px;font-size:12px;font-weight:600;}"
+                "QPushButton:hover{border:1px solid #ffffff;}"
+                % theme.rgb_to_hex(theme.PALETTES[key])
+            )
+            b.clicked.connect(lambda _=False, k=key: self._pick_palette(k))
+            theme_row.addWidget(b)
+        theme_row.addStretch(1)
+        lay_p.addWidget(_row("应用主题色", _wrap_row(theme_row)))
+
+        self.wheel_dot = QPushButton()
+        self.wheel_dot.setFixedSize(52, 28)
+        self.wheel_dot.setCursor(Qt.PointingHandCursor)
+        self.wheel_dot.setToolTip("只改当前这套轮盘的颜色")
+        self.wheel_dot.clicked.connect(self._pick_wheel_color)
+        self.chk_follow = QCheckBox("跟随主题色")
+        self.chk_follow.toggled.connect(self._on_follow_theme)
+        wrow = QHBoxLayout()
+        wrow.setSpacing(8)
+        wrow.addWidget(self.wheel_dot)
+        wrow.addWidget(self.chk_follow)
+        wrow.addStretch(1)
+        lay_p.addWidget(_row("本套轮盘颜色", _wrap_row(wrow)))
+        hint_p = QLabel(
+            "应用主题色用于控件高亮。每套轮盘可以独立取色，也可以跟随应用主题色。"
+        )
+        hint_p.setObjectName("Hint")
+        hint_p.setWordWrap(True)
+        lay_p.addWidget(hint_p)
+        root.addWidget(card_p)
+
+        # ---------------- 轮盘库：最多 8 套，快速切换 ----------------
+        card_w, lay_w = _card("轮盘库")
+        hint_w = QLabel(
+            "最多存 8 套轮盘。每套各自记自己的格子摆位、音效参数和颜色；"
+            "「切换轮盘的轮盘」可以在游戏里直接切，不用开这个窗口。"
+        )
+        hint_w.setObjectName("Hint")
+        hint_w.setWordWrap(True)
+        lay_w.addWidget(hint_w)
+
+        self.wheel_list = QListWidget()
+        # 高度不写死：refresh_wheels 里按实际套数撑开。
+        # 以前固定 150px，8 套根本放不下，得在列表里再滚一次才能看到后面几套。
+        self.wheel_list.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.wheel_list.setMinimumHeight(84)
+        self.wheel_list.currentRowChanged.connect(lambda _r: self._sync_wheel_buttons())
+        self.wheel_list.itemDoubleClicked.connect(lambda _i: self._do_switch())
+        lay_w.addWidget(self.wheel_list)
+
+        wbtns = QHBoxLayout()
+        wbtns.setSpacing(8)
+        self.btn_w_switch = QPushButton("切换到这套")
+        self.btn_w_switch.clicked.connect(self._do_switch)
+        self.btn_w_new = QPushButton("另存为新轮盘")
+        self.btn_w_new.clicked.connect(self._do_new_wheel)
+        self.btn_w_rename = QPushButton("重命名")
+        self.btn_w_rename.clicked.connect(self._do_rename_wheel)
+        self.btn_w_clear = QPushButton("清空格子")
+        self.btn_w_clear.clicked.connect(self._do_clear_wheel)
+        self.btn_w_del = QPushButton("删除")
+        self.btn_w_del.clicked.connect(self._do_delete_wheel)
+        for b in (self.btn_w_switch, self.btn_w_new, self.btn_w_rename,
+                  self.btn_w_clear, self.btn_w_del):
+            b.setCursor(Qt.PointingHandCursor)
+            wbtns.addWidget(b)
+        wbtns.addStretch(1)
+        lay_w.addLayout(wbtns)
+
+        # 这套轮盘自己的呼出键：长按临时摆出并弹盘，单击放这套盘上次响的那个
+        wr = QHBoxLayout()
+        wr.setSpacing(8)
+        lb_hk = QLabel("呼出键")
+        lb_hk.setStyleSheet("font-size:12px;")
+        wr.addWidget(lb_hk)
+        self.key_wheel = KeyBox("", 132)
+        self.key_wheel.setToolTip(
+            "长按这个键：把这套轮盘的轮盘弹出来\n"
+            "单击这个键：放这套轮盘上次响过的那个音效（一次都没放过就放第一格）\n"
+            "不会改掉「当前轮盘」——松手之后主热键弹出来的还是原来那套\n"
+            "留空 = 只能用主热键、或者「切换轮盘」那个键进来"
+        )
+        wr.addWidget(self.key_wheel)
+        hint_wk = QLabel("长按弹这套盘，单击放上次那个（不改当前轮盘）")
+        hint_wk.setObjectName("Hint")
+        wr.addWidget(hint_wk, 1)
+        lay_w.addLayout(wr)
+        self.key_wheel.key_changed.connect(self._on_wheel_hotkey)
+        root.addWidget(card_w)
+
+        card2, lay2 = _card("手感")
+        self.sensitivity = self._slider(int(float(cfg.get("sensitivity", 0.85)) * 100), 30, 200, " %")
+        lay2.addWidget(_row("鼠标灵敏度", self.sensitivity, ""))
+        self.noise = self._slider(int(cfg.get("noise_floor", 2)), 0, 8, "")
+        lay2.addWidget(_row("手抖过滤", self.noise, "越大越稳，但越迟钝"))
+        hint_dz = QLabel(
+            "中心那块白圈就是「不选中」的范围，由上面「中空比例」决定——"
+            "想让它更灵敏就把中空比例调小。以前另有一个独立的「死区」滑块，"
+            "和画面对不上（手还在中间、格子已经亮了），已经并进中空比例。"
+        )
+        hint_dz.setObjectName("Hint")
+        hint_dz.setWordWrap(True)
+        lay2.addWidget(hint_dz)
+        root.addWidget(card2)
+        root.addStretch(1)
+
+        for w in (self.radius, self.inner, self.scale, self.opacity, self.outer_thick,
+                  self.sensitivity, self.noise, self.stop_fade):
+            w.slider.valueChanged.connect(self._push)
+        self.chk_names.toggled.connect(self._push)
+        self.chk_anim.toggled.connect(self._push)
+        # 勾选框和滑块都要接上：只接 toggled（灰化）不接 _push 的话，
+        # 用户勾了「停止淡出」但配置里一直是 False，声音照旧被一刀切断。
+        self.chk_stop_fade.toggled.connect(self._push)
+
+        self.refresh_wheels()
+        self._refresh_color_dots()
+
+    # ---- 配色 ----
+    def _paint_dot(self, btn: QPushButton, color: str, empty_hint: str = "") -> None:
+        """把按钮画成一个色块。空颜色显示成"虚线小方块 + 文字"。"""
+        if color:
+            btn.setText("跟随" if empty_hint else "")
+            btn.setStyleSheet(
+                "QPushButton{background:%s;color:#0d0f13;font-size:11px;font-weight:600;"
+                "border:2px solid %s;border-radius:8px;}"
+                "QPushButton:hover{border-color:#ffffff;}"
+                % (color, "#ccd9ed" if empty_hint else "#ffffff")
+            )
+        else:
+            btn.setText(empty_hint or "—")
+            btn.setStyleSheet(
+                "QPushButton{background:#ffffff;color:#456375;border:1px dashed #8ba1c3;"
+                "border-radius:8px;font-size:11px;}"
+            )
+
+    def _refresh_color_dots(self) -> None:
+        cur = str(self.cfg.get("accent_color") or theme.rgb_to_hex(theme.DEF_ACCENT))
+        self._paint_dot(self.theme_dot, cur)
+        wc = ""
+        if self.scfg is not None:
+            wc = self.scfg.wheel_color()
+        # 跟随主题色时，色块直接显示"实际会用到的颜色"，一眼知道轮盘长什么样
+        self._paint_dot(self.wheel_dot, wc or cur, "跟随" if not wc else "")
+        self.chk_follow.blockSignals(True)
+        self.chk_follow.setChecked(not wc)
+        self.chk_follow.blockSignals(False)
+        self.wheel_dot.setEnabled(bool(wc))
+
+    def _pick_palette(self, key: str) -> None:
+        rgb = theme.PALETTES.get(key, theme.DEF_ACCENT)
+        hexv = theme.rgb_to_hex(rgb)
+        self.cfg["accent_color"] = hexv
+        self.cfg["accent_theme"] = key
+        self._refresh_color_dots()
+        self.palette_changed.emit(hexv)
+
+    def _pick_theme_color(self) -> None:
+        cur = theme.hex_to_rgb(str(self.cfg.get("accent_color") or theme.rgb_to_hex(theme.DEF_ACCENT)))
+        col = QColorDialog.getColor(QColor(*cur), self, "选择应用主题色")
+        if not col.isValid():
+            return
+        hexv = theme.rgb_to_hex((col.red(), col.green(), col.blue()))
+        self.cfg["accent_color"] = hexv
+        self._refresh_color_dots()
+        self.palette_changed.emit(hexv)
+
+    def _pick_wheel_color(self) -> None:
+        if self.scfg is None:
+            return
+        cur = theme.hex_to_rgb(self.scfg.wheel_color() or str(self.cfg.get("accent_color") or theme.rgb_to_hex(theme.DEF_ACCENT)))
+        col = QColorDialog.getColor(QColor(*cur), self, "选择这套轮盘的颜色")
+        if not col.isValid():
+            return
+        hexv = theme.rgb_to_hex((col.red(), col.green(), col.blue()))
+        self.scfg.set_wheel_color(hexv)
+        scfg_save(self.scfg)
+        self._refresh_color_dots()
+        self.wheel_color_changed.emit(hexv)
+
+    def _on_follow_theme(self, on: bool) -> None:
+        if self.scfg is None or on == (self.scfg.wheel_color() == ""):
+            return
+        self.scfg.set_wheel_color("" if on else str(self.cfg.get("accent_color") or theme.rgb_to_hex(theme.DEF_ACCENT)))
+        scfg_save(self.scfg)
+        self._refresh_color_dots()
+        self.wheel_color_changed.emit(self.scfg.wheel_color())
+
+    # ---- 轮盘库 ----
+    def _fit_wheel_list(self) -> None:
+        """让列表高度刚好放下全部轮盘（最多 8 套），不在列表内部再滚一次。
+
+        以前这里写死 150px，8 套放不下，得先滚外层再滚列表才看得到后面几套，
+        叠在一起就是"轮盘多了显示不出来"。
+        """
+        n = self.wheel_list.count()
+        if n <= 0:
+            self.wheel_list.setFixedHeight(84)
+            return
+        row_h = self.wheel_list.sizeHintForRow(0)
+        # 构造时样式表还没套上，sizeHintForRow 会按默认行高给一个偏小的值，
+        # 照它算就会少算出一截（8 套只能显示 5 套）。这里给个经验下限，
+        # 样式表真正生效后 showEvent 会再校准一次。
+        if row_h < 24:
+            row_h = 26
+        self.wheel_list.setFixedHeight(max(84, n * row_h + 18))
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        # 显示时才拿得到真实行高（受样式表影响），这里再对一次
+        if getattr(self, "wheel_list", None) is not None:
+            self._fit_wheel_list()
+
+    def refresh_wheels(self) -> None:
+        """重建轮盘列表。当前那套加一个「正在用」标记。"""
+        self.wheel_list.blockSignals(True)
+        self.wheel_list.clear()
+        if self.scfg is None:
+            self.wheel_list.blockSignals(False)
+            self._fit_wheel_list()
+            self._sync_wheel_buttons()
+            return
+        cur = self.scfg.current
+        for w in self.scfg.wheels:
+            mark = "● 正在用   " if w.wid == cur else "○ "
+            hk = str(getattr(w, "hotkey", "") or "")
+            tail = f"    {sr.spec_label(hk)}" if hk else ""
+            item = QListWidgetItem(
+                f"{mark}{w.name or w.wid}    {len(w.order)} 个音效{tail}"
+            )
+            item.setData(Qt.UserRole, w.wid)
+            # 名字染成这套轮盘的颜色，方便一眼对上；但不能直接拿原色去染——
+            # 用户挑了个深蓝/深紫时，文字在深色列表里就糊成一片看不见了。
+            # 亮色保持原样，暗色提亮到看得清。
+            rgb = theme.parse_rgb(w.color)
+            if rgb is not None:
+                if theme.is_light(rgb, 110):
+                    item.setForeground(QColor(rgb[0], rgb[1], rgb[2]))
+                else:
+                    _b, light, _d = theme.derive(rgb)
+                    item.setForeground(QColor(light[0], light[1], light[2]))
+            self.wheel_list.addItem(item)
+        # 默认选中当前那套
+        for i in range(self.wheel_list.count()):
+            if self.wheel_list.item(i).data(Qt.UserRole) == cur:
+                self.wheel_list.setCurrentRow(i)
+                break
+        self.wheel_list.blockSignals(False)
+        self._fit_wheel_list()
+        self._sync_wheel_buttons()
+
+    def _sel_wid(self) -> str:
+        it = self.wheel_list.currentItem()
+        return str(it.data(Qt.UserRole) or "") if it else ""
+
+    def _sync_wheel_buttons(self) -> None:
+        wid = self._sel_wid()
+        cur = self.scfg.current if self.scfg is not None else ""
+        total = len(self.scfg.wheels) if self.scfg is not None else 0
+        self.btn_w_switch.setEnabled(bool(wid) and wid != cur)
+        self.btn_w_new.setEnabled(total < 8)
+        self.btn_w_rename.setEnabled(bool(wid))
+        self.btn_w_clear.setEnabled(bool(wid))
+        self.btn_w_del.setEnabled(total > 1 and bool(wid))
+        self._load_wheel_hotkey()
+
+    # ---- 每套轮盘的专属呼出键 ----
+    def _load_wheel_hotkey(self) -> None:
+        """把选中那套轮盘的呼出键显示到输入框里（只显示，不回写）。"""
+        wid = self._sel_wid()
+        w = None
+        if self.scfg is not None and wid:
+            try:
+                w = self.scfg.wheel_by_id(wid)
+            except Exception:
+                w = None
+        box = getattr(self, "key_wheel", None)
+        if box is None:
+            return
+        box.blockSignals(True)
+        box.set_key(str(getattr(w, "hotkey", "") or ""))
+        box.blockSignals(False)
+        box.setEnabled(w is not None)
+
+    def _on_wheel_hotkey(self, key: str) -> None:
+        """写回这套轮盘的呼出键，顺带查重。
+
+        两套盘绑同一个键等于没绑（永远只会切到第一套），主热键同理——
+        所以撞了就明确拒绝，而不是默默接受然后在游戏里表现成"按了没反应"。
+        """
+        wid = self._sel_wid()
+        if self.scfg is None or not wid:
+            return
+        key = str(key or "").strip()
+        w = None
+        try:
+            w = self.scfg.wheel_by_id(wid)
+        except Exception:
+            w = None
+        if w is None:
+            return
+
+        if key:
+            base = sr.norm_spec(str(self.cfg.get("hotkey") or "y"))
+            if key == base:
+                QMessageBox.information(
+                    self, "呼出键",
+                    f"「{sr.spec_label(key)}」已经是主呼出键了，换一个。"
+                )
+                self._load_wheel_hotkey()
+                return
+            for other in self.scfg.wheels:
+                if other.wid == wid:
+                    continue
+                if sr.norm_spec(getattr(other, "hotkey", "") or "") == key:
+                    QMessageBox.information(
+                        self, "呼出键",
+                        f"「{sr.spec_label(key)}」已经给「{other.name or other.wid}」用了，换一个。"
+                    )
+                    self._load_wheel_hotkey()
+                    return
+
+        w.hotkey = key
+        scfg_save(self.scfg)
+        self.refresh_wheels()
+        self.changed.emit()      # 主程序据此重绑键
+
+    def _do_switch(self) -> None:
+        wid = self._sel_wid()
+        if not wid or self.scfg is None or wid == self.scfg.current:
+            return
+        self.wheel_switch.emit(wid)
+
+    def _do_new_wheel(self) -> None:
+        if self.scfg is None:
+            return
+        if len(self.scfg.wheels) >= 8:
+            QMessageBox.information(self, "轮盘库", "最多只能存 8 套轮盘。\n先删一套再用。")
+            return
+        name, ok = QInputDialog.getText(
+            self, "另存为新轮盘",
+            "新轮盘的名字（会完整复制当前这套的格子、参数和颜色）：",
+            text=f"轮盘 {len(self.scfg.wheels) + 1}",
+        )
+        if not ok or not name.strip():
+            return
+        w = self.scfg.new_wheel(name.strip(), copy_current=True)
+        if w is None:
+            return
+        scfg_save(self.scfg)
+        self.refresh_wheels()
+        self.changed.emit()
+
+    def _do_rename_wheel(self) -> None:
+        wid = self._sel_wid()
+        if self.scfg is None or not wid:
+            return
+        w = self.scfg.wheel_by_id(wid)
+        if w is None:
+            return
+        name, ok = QInputDialog.getText(self, "重命名轮盘", "新名字：", text=w.name)
+        if not ok or not name.strip():
+            return
+        if self.scfg.rename_wheel(wid, name):
+            scfg_save(self.scfg)
+            self.refresh_wheels()
+            self.changed.emit()
+
+    def _do_clear_wheel(self) -> None:
+        wid = self._sel_wid()
+        if self.scfg is None or not wid:
+            return
+        w = self.scfg.wheel_by_id(wid)
+        if w is None or not w.order:
+            return
+        ans = QMessageBox.question(
+            self, "清空格子",
+            f"把「{w.name}」上的 {len(w.order)} 个音效全部撤下来？\n"
+            "音效文件和参数都还在，只是这套轮盘变空。",
+        )
+        if ans != QMessageBox.Yes:
+            return
+        if self.scfg.clear_wheel(wid):
+            scfg_save(self.scfg)
+            self.refresh_wheels()
+            self.changed.emit()
+
+    def _do_delete_wheel(self) -> None:
+        wid = self._sel_wid()
+        if self.scfg is None or not wid:
+            return
+        w = self.scfg.wheel_by_id(wid)
+        if w is None or len(self.scfg.wheels) <= 1:
+            return
+        ans = QMessageBox.question(
+            self, "删除轮盘",
+            f"删掉「{w.name}」这套轮盘？\n"
+            "只删这套的摆位和参数，音效文件不会动。",
+        )
+        if ans != QMessageBox.Yes:
+            return
+        if self.scfg.delete_wheel(wid):
+            scfg_save(self.scfg)
+            self.refresh_wheels()
+            self.changed.emit()
+
+    def _sync_stop_fade_enabled(self, on: bool) -> None:
+        """没开淡出时把时长滑块灰掉。
+
+        藏起来反而让人找不到；灰着能说明"开了才有得调"。
+        """
+        try:
+            self.stop_fade.setEnabled(bool(on))
+        except Exception:
+            pass
+
+    def _push(self) -> None:
+        self.cfg["wheel_radius"] = int(self.radius.slider.value())
+        self.cfg["inner_ratio"] = self.inner.slider.value() / 100.0
+        self.cfg["wheel_scale"] = self.scale.slider.value() / 100.0
+        self.cfg["opacity"] = self.opacity.slider.value() / 100.0
+        self.cfg["outer_thickness"] = int(self.outer_thick.slider.value())
+        self.cfg["show_names"] = bool(self.chk_names.isChecked())
+        self.cfg["animations"] = bool(self.chk_anim.isChecked())
+        self.cfg["stop_fade_enabled"] = bool(self.chk_stop_fade.isChecked())
+        self.cfg["stop_fade_ms"] = int(self.stop_fade.slider.value())
+        self.cfg["sensitivity"] = self.sensitivity.slider.value() / 100.0
+        self.cfg["noise_floor"] = int(self.noise.slider.value())
+        self.changed.emit()
+
+    @staticmethod
+    def _slider(value: int, lo: int, hi: int, suffix: str) -> QWidget:
+        """滑块 + 数值联动的一行。"""
+        wrap = QWidget()
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(10)
+        sl = QSlider(Qt.Horizontal)
+        sl.setRange(lo, hi)
+        sl.setValue(value)
+        val = QLabel(f"{value}{suffix}")
+        val.setFixedWidth(58)
+        val.setStyleSheet(f"color:{accent_hex()};font-size:12px;font-weight:600;")
+        sl.valueChanged.connect(lambda v: val.setText(f"{v}{suffix}"))
+        lay.addWidget(sl, 1)
+        lay.addWidget(val)
+        wrap.slider = sl          # 供后续取值
+        wrap.value_label = val
+        return wrap
+
+
+class MicPage(QWidget):
+    """麦克风注入：把音效混进游戏语音。
+
+    这一页也负责"设备检测"：没装虚拟声卡的时候要明确告诉用户缺什么，
+    而不是让功能悄悄不生效——那种"点了没反应"最容易让人以为软件坏了。
+    """
+
+    changed = Signal()          # 结构变化（开关/换设备），主程序据此重建链路
+    level_changed = Signal(float)
+
+    def __init__(self, cfg: dict, engine=None) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.engine = engine
+        self._timer = QTimer(self)
+        self._timer.setInterval(50)
+        self._timer.timeout.connect(self._tick)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+
+        body = QWidget()
+        root = QHBoxLayout(body)
+        root.setContentsMargins(0, 0, 5, 0)
+        root.setSpacing(16)
+        route = QVBoxLayout()
+        route.setSpacing(12)
+        levels = QVBoxLayout()
+        levels.setSpacing(12)
+        root.addLayout(route, 1)
+        root.addLayout(levels, 1)
+        scroll.setWidget(body)
+
+        self.columns = root
+        card, lay = _card("录音线路")
+        self.cmb_mic = QComboBox()
+        self.cmb_mic.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.cmb_mic.setMinimumContentsLength(14)
+        lay.addWidget(_row("实体麦克风", self.cmb_mic))
+
+        self.output_name = QLabel(MIC_ENDPOINT)
+        self.output_name.setObjectName("EndpointName")
+        self.output_name.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(_row("混音输出", self.output_name))
+
+        self.chk_enable = QCheckBox("向虚拟麦克风送出混音")
+        self.chk_enable.setChecked(bool(cfg.get("mic_enabled", False)))
+        lay.addWidget(self.chk_enable)
+
+        self.lbl_status = _WrapLabel("")
+        self.lbl_status.setObjectName("RouteStatus")
+        lay.addWidget(self.lbl_status)
+
+        row = QHBoxLayout()
+        self.btn_refresh = QPushButton("重新检测")
+        self.btn_refresh.clicked.connect(self._redetect)
+        row.addWidget(self.btn_refresh)
+        self.btn_install = QPushButton("安装随附驱动")
+        self.btn_install.clicked.connect(self._install_driver)
+        row.addWidget(self.btn_install)
+        self.btn_copy = QPushButton("复制设备名")
+        self.btn_copy.clicked.connect(self._copy_name)
+        row.addWidget(self.btn_copy)
+        row.addStretch(1)
+        lay.addLayout(row)
+        route.addWidget(card)
+
+        # ---- 音量 ----
+        card2, lay2 = _card("音量")
+        self.snd_gain = WheelPage._slider(
+            int(float(cfg.get("cable_effect_gain", 1.0)) * 100), 0, 150, " %"
+        )
+        lay2.addWidget(_row("音效·送对方", self.snd_gain))
+        self.mic_gain = WheelPage._slider(int(float(cfg.get("mic_gain", 0.9)) * 100), 0, 200, " %")
+        lay2.addWidget(_row("原声·送对方", self.mic_gain))
+        self.chk_monitor = QCheckBox("音效也从自己的耳机里放出来（自己能听见）")
+        self.chk_monitor.setChecked(bool(cfg.get("monitor_enabled", True)))
+        lay2.addWidget(self.chk_monitor)
+        self.mon_gain = WheelPage._slider(int(float(cfg.get("volume", 0.8)) * 100), 0, 150, " %")
+        lay2.addWidget(_row("本地监听", self.mon_gain))
+        self.latency = WheelPage._slider(int(cfg.get("mic_latency_ms", 60)), 20, 200, " ms")
+        self.latency.setToolTip("增大缓冲可减少卡顿，也会增加延迟。")
+        lay2.addWidget(_row("缓冲余量", self.latency))
+        levels.addWidget(card2)
+
+        # ---- 说话测试 ----
+        card3, lay3 = _card("说话测试")
+        h = _WrapLabel("点击「开始测试」后说话，电平条移动表示 Jinkra 已收到你的声音。")
+        h.setObjectName("Hint")
+        lay3.addWidget(h)
+
+        row3 = QHBoxLayout()
+        row3.setSpacing(10)
+        self.btn_test = QPushButton("开始测试")
+        self.btn_test.setCursor(Qt.PointingHandCursor)
+        self.meter = QProgressBar()
+        self.meter.setRange(0, 100)
+        self.meter.setValue(0)
+        self.meter.setTextVisible(False)
+        self.meter.setFixedHeight(10)
+        self.meter.setObjectName("MicMeter")
+        row3.addWidget(self.btn_test)
+        row3.addWidget(self.meter, 1)
+        lay3.addLayout(row3)
+        route.addWidget(card3)
+
+        route.addStretch(1)
+        levels.addStretch(1)
+
+        # ---- 事件 ----
+        self.chk_enable.toggled.connect(self._push)
+        self.chk_monitor.toggled.connect(self._push)
+        self.cmb_mic.currentIndexChanged.connect(self._on_device_changed)
+        self.btn_test.clicked.connect(self._toggle_test)
+        for w in (self.snd_gain, self.mic_gain, self.mon_gain, self.latency):
+            w.slider.valueChanged.connect(self._push)
+
+        self._devices = QMediaDevices(self)
+        self._devices.audioInputsChanged.connect(self.refresh_devices)
+        self._devices.audioOutputsChanged.connect(self.refresh_devices)
+        self._status_timer = QTimer(self, interval=1000)
+        self._status_timer.timeout.connect(self._refresh_status)
+        self.refresh_devices()
+
+    # ---- 设备 ----
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "columns"):
+            self.columns.setDirection(QBoxLayout.TopToBottom if self.width() < 690
+                                      else QBoxLayout.LeftToRight)
+
+    def _copy_name(self) -> None:
+        QApplication.clipboard().setText(self.output_name.text())
+        self.btn_copy.setText("已复制")
+        QTimer.singleShot(1200, self._reset_copy_button)
+
+    def _reset_copy_button(self) -> None:
+        self.btn_copy.setText("复制设备名")
+
+    def refresh_devices(self) -> None:
+        self.cmb_mic.blockSignals(True)
+        self.cmb_mic.clear()
+        self.cmb_mic.addItem("自动 · Windows 默认麦克风", "")
+        for device in sr.real_inputs():
+            name = device.description()
+            self.cmb_mic.addItem(name, name)
+        saved = str(self.cfg.get("mic_device") or "")
+        index = self.cmb_mic.findData(saved)
+        if index < 0:
+            self.cmb_mic.addItem(f"{saved}（未连接）", saved)
+            index = self.cmb_mic.count() - 1
+        self.cmb_mic.setCurrentIndex(index)
+        self.cmb_mic.blockSignals(False)
+        self._refresh_status()
+
+    def _install_driver(self) -> None:
+        try:
+            driver_setup.start_install(sr.BASE_DIR, sr.RESOURCE_DIR)
+        except OSError as error:
+            self.lbl_status.setText(str(error))
+
+    def _redetect(self) -> None:
+        if self.engine is not None:
+            if self.chk_enable.isChecked() and not self.engine.audio_status()["cable_active"]:
+                self.engine.rebuild()
+            else:
+                self.engine.restart_sink()
+        self.refresh_devices()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.refresh_devices()
+        self._status_timer.start()
+
+    def hideEvent(self, event) -> None:
+        self._status_timer.stop()
+        if self._timer.isActive():
+            self._toggle_test()
+        super().hideEvent(event)
+
+    def _refresh_status(self) -> None:
+        enabled = self.chk_enable.isChecked()
+        status = self.engine.audio_status() if self.engine is not None else {}
+        output = sr.guess_virtual_output()
+        ready = output is not None
+        self.chk_enable.setEnabled(ready or enabled)
+        self.btn_copy.setEnabled(ready)
+        package = driver_setup.installer(sr.BASE_DIR, sr.RESOURCE_DIR)
+        self.btn_install.setVisible(not ready and package is not None)
+        if not ready:
+            lines = ["已找到随附驱动。安装后点击重新检测。"
+                     if package else "Windows 尚未识别 Jinkra Virtual Mic。当前安装包没有随附已签名驱动。"]
+        elif status.get("cable_active") and status.get("cable") == output.description():
+            lines = ["混音已送出。在游戏或语音软件中选择 Jinkra Virtual Mic。"]
+        elif enabled:
+            lines = [status.get("cable_error") or "正在打开混音线路。"]
+        else:
+            lines = ["虚拟麦克风已就绪。启用送声后，游戏可从此设备录制混音。"]
+        if status.get("mic"):
+            lines.append(f"采集中 · {status['mic']}")
+        if status.get("error"):
+            lines.append(str(status["error"]))
+        message = "\n".join(lines)
+        if message != self.lbl_status.text():
+            self.lbl_status.setText(message)
+
+    def _on_device_changed(self) -> None:
+        self._push()
+
+    # ---- 说话测试 ----
+    def _toggle_test(self) -> None:
+        if self._timer.isActive():
+            self._timer.stop()
+            self.meter.setValue(0)
+            self.btn_test.setText("开始测试")
+            # 测试开着的那路采集这时候没人用了：不放掉的话，麦克风会一直被占用
+            # （Windows 任务栏那个"正在使用麦克风"的图标一直亮着）。
+            # 注意只在没开注入时放：开着注入时采集是人声的输入源，关掉等于把人声掐了。
+            if self.engine is not None and not self.engine.audio_status().get("cable_active"):
+                self.engine.release_capture()
+                self._refresh_status()
+            return
+        if self.engine is None:
+            self.lbl_status.setText("⚠ 音频引擎没接上，无法测试")
+            return
+        ok = self.engine.restart_capture()
+        self._refresh_status()
+        if not ok:
+            self.btn_test.setText("开始测试")
+            return
+        self.btn_test.setText("停止测试")
+        self._timer.start()
+
+    def _tick(self) -> None:
+        if self.engine is None:
+            return
+        lv = self.engine.mic_level()
+        # 平方一下更好看：小声也看得出来在动，大声才顶到满
+        self.meter.setValue(int(min(1.0, lv * 3.0) ** 0.6 * 100))
+
+    # ---- 写回配置 ----
+    def _push(self) -> None:
+        self.cfg["mic_enabled"] = bool(self.chk_enable.isChecked())
+        self.cfg["monitor_enabled"] = bool(self.chk_monitor.isChecked())
+        self.cfg["mic_device"] = str(self.cmb_mic.currentData() or "")
+        self.cfg["cable_effect_gain"] = self.snd_gain.slider.value() / 100.0
+        self.cfg["mic_gain"] = self.mic_gain.slider.value() / 100.0
+        self.cfg["volume"] = self.mon_gain.slider.value() / 100.0
+        self.cfg["mic_latency_ms"] = int(self.latency.slider.value())
+        self.changed.emit()
+        self._refresh_status()
+
+
+# ---------------------------------------------------------------- 说明页
+
+class _FoldSection(QWidget):
+    """可折叠的一节：标题一行，点开才展开内容。
+
+    内容统一用纯文本 QLabel。_WrapLabel 的自动撑高是按字体度量量纯文本算的，
+    富文本（带标签的字符串）会被量错、结果切掉半截；需要链接的地方单独放控件。
+    """
+
+    def __init__(self, title: str, expanded: bool = False, hot: bool = False) -> None:
+        super().__init__()
+        self.title = title
+        self.hot = bool(hot)          # True = 这一节用应用主题色标出来
+        self._labels: list[_WrapLabel] = []
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        self.head = QPushButton(self._head_text(False))
+        self.head.setObjectName("FoldHead")
+        self.head.setCheckable(True)
+        self.head.setCursor(Qt.PointingHandCursor)
+        v.addWidget(self.head)
+
+        self.body = QFrame()
+        self.body.setObjectName("FoldBody")
+        self.bl = QVBoxLayout(self.body)
+        self.bl.setContentsMargins(14, 6, 12, 14)
+        self.bl.setSpacing(7)
+        v.addWidget(self.body)
+
+        if self.hot:
+            # QSS 用 [hot="true"] 选中这两个控件；属性得在套样式表前设好
+            for w in (self.head, self.body):
+                w.setProperty("hot", True)
+
+        self.head.toggled.connect(self.set_expanded)
+        self.set_expanded(expanded)
+
+    def _head_text(self, on: bool) -> str:
+        return ("▼  " if on else "▶  ") + self.title
+
+    def para(self, text: str, kind: str = "text") -> "_WrapLabel":
+        """加一段文字。kind: head / text / hint。"""
+        lab = _WrapLabel(text)
+        lab.setObjectName({"head": "DocHead", "hint": "Hint"}.get(kind, "DocText"))
+        lab.setTextInteractionFlags(Qt.TextSelectableByMouse)   # 想复制哪句都能选中
+        self.bl.addWidget(lab)
+        self._labels.append(lab)
+        return lab
+
+    def add_widget(self, w: QWidget) -> None:
+        self.bl.addWidget(w)
+
+    def set_expanded(self, on: bool) -> None:
+        on = bool(on)
+        self.head.blockSignals(True)
+        self.head.setChecked(on)
+        self.head.setText(self._head_text(on))
+        self.head.blockSignals(False)
+        self.body.setVisible(on)
+        if on:
+            # 刚展开时宽度还没定，量出来的高度偏小会把多行文字切掉；
+            # 先量一遍，再等布局跑完一轮补一次
+            for lab in self._labels:
+                lab._fit()
+            QTimer.singleShot(0, self._refit)
+
+    def _refit(self) -> None:
+        for lab in self._labels:
+            lab._fit()
+
+
+class HelpPage(QWidget):
+    """说明页：安全声明 / 开发者说明 / 使用教程 / 常见问题。
+
+    全部是静态文字，不和配置、音频、文件系统打交道 —— 这一页不会成为
+    新的故障源，也不会因为用户点了几下就改变程序状态。
+    """
+
+    guide_requested = Signal()
+    update_requested = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+
+        body = QWidget()
+        root = QVBoxLayout(body)
+        root.setContentsMargins(0, 12, 6, 8)
+        root.setSpacing(10)
+        body.setMaximumWidth(850)
+        scroll.setAlignment(Qt.AlignHCenter)
+        scroll.setWidget(body)
+        self.root_lay = root
+        self.scroll = scroll
+
+        # ---- 顶部：一句话 + 全部展开 / 收起 ----
+        top = QFrame()
+        top.setObjectName("Card")
+        tl = QVBoxLayout(top)
+        tl.setContentsMargins(14, 12, 14, 12)
+        tl.setSpacing(8)
+        tip = _WrapLabel(
+            "Jinkra 由 SR Voiceover Roulette 改造，原作者为迟昼（B 站账号 缪缪缪尔赛思）。\n"
+            "该软件仅供娱乐，安全性请使用者自行判断。"
+        )
+        tip.setObjectName("DocText")
+        tl.addWidget(tip)
+        tools = QHBoxLayout()
+        guide = QPushButton("重新打开使用向导")
+        guide.clicked.connect(self.guide_requested.emit)
+        updates = QPushButton("检查更新")
+        updates.clicked.connect(self.update_requested.emit)
+        tools.addWidget(guide)
+        tools.addWidget(updates)
+        tools.addStretch()
+        tl.addLayout(tools)
+        root.addWidget(top)
+
+        self.sections: list[_FoldSection] = []
+
+        # ================= 一、安全声明 =================
+        s1 = self._new_section("一、安全声明")
+        s1.para(
+            "该软件仅供娱乐，它的功能实现是通过读你的按键、播放你放进去的音效、"
+            "最后把声音送到声卡。检查更新时会连接 GitHub 和加速线路，软件不注入、不模拟按键，安全性请使用者"
+            "自行判断，如若因滥用而发生封号事件，与软件作者无关。"
+        )
+        s1.para("它做了什么（可自行核对）", "head")
+        s1.para(
+            "· 收按键：用 Windows 官方的 Raw Input 接口 + 系统按键状态轮询。\n"
+            "  只读，不拦截、不屏蔽、不转发、不模拟 —— 游戏收到的输入和没装它时完全一样。\n"
+            "· 放声音：只读本文件夹 sounds 里的音频和 config.json / sounds.json，"
+            "在本机解码、混音、送到声卡。\n"
+            "· 送语音（可选）：开「把音效和麦克风送进游戏语音」后，麦克风音频只在内存里实时混合，用完即丢。\n"
+            "· 不写系统目录、不写 AppData、不装驱动、不装证书、不调用外部命令。"
+        )
+        s1.para("它写了哪些文件（可自行核对）", "head")
+        s1.para(
+            "· config.json —— 你的设置\n"
+            "· sounds.json —— 轮盘摆位、每个音效的参数、组合音效、你的多套轮盘\n"
+            "· jinkra_roulette.log —— 排障日志（纯文本，随时可删，下次运行自动重建）\n"
+            "· 导出的 WAV —— 只有你点「导出 WAV」时，才会写到你选的位置"
+        )
+        s1.para(
+            "注册表只在你自己打开「开机自动启动」时写一条："
+            "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run "
+            "下名为 Jinkra Voiceover Roulette 的值，内容是本程序的路径。"
+            "关掉开关立刻删除，不动其它任何键，默认就是关的。"
+        )
+        s1.para(
+            "日志里记的是音频设备型号、音量与缓冲参数、被按下的按键名"
+            "（如 y、mouse_left）、音效解码与播放过程。"
+            "不记录你输入的文字、聊天内容和任何录音，也不会外传。"
+        )
+        s1.para(
+            "想核验：任务管理器 →「资源监视器」→ 网络，看不到它建立连接；"
+            "注册表里搜 Jinkra Voiceover Roulette，只有开过自启才有那一条。",
+            "hint",
+        )
+        s1.para("必要提醒", "head")
+        s1.para(
+            "· 这是第三方工具，和游戏官方没有任何关系，"
+            "也给不了「官方允许使用」这种资格。\n"
+            "· 用任何第三方程序介入游戏过程，都可能与游戏用户协议冲突，"
+            "理论上存在被警告、限权、封号的可能，风险由你判断并承担。\n"
+            "· 在竞技对局里用音效误导对手是否属于不正当行为，由你和平台判断。"
+        )
+
+        # ================= 二、开发者说明 =================
+        s2 = self._new_section("二、开发者说明")
+        s2.para("上游项目为 SR Voiceover Roulette。原作者迟昼（B 站账号 缪缪缪尔赛思），采用 MIT 许可。")
+        s2.para(
+            "Jinkra 版更新了界面、图标和语音设备配对流程。"
+            "完整版权和许可条款随程序附在 LICENSE 文件中。"
+        )
+        s2.para("音效素材", "head")
+        s2.para(
+            "便携包和公开仓库附带合成提示音。"
+        )
+
+        # ================= 三、详细使用教程 =================
+        s3 = self._new_section("三、详细使用教程")
+        steps = [
+            (
+                "1｜装好就能用",
+                "解压后双击 Jinkra Voiceover Roulette.exe。默认打开设置窗口，关掉窗口后继续在托盘运行。"
+                "如果以管理员身份运行的游戏收不到快捷键，可右键以管理员身份运行 Jinkra。",
+            ),
+            (
+                "2｜放进你的音效",
+                "托盘图标右键 →「打开 sounds 目录」→ 丢入 wav / mp3 / flac / ogg / m4a → "
+                "再右键「重新扫描 sounds 目录」。建议按 01 xxx.wav 这样命名，列表会按名字排序。\n"
+                "音效多了就建子文件夹分类（sounds/整活/、sounds/整活/尖叫/ 都行，几层都认），"
+                "音效库会按文件夹分好组显示，每组标题写着有几个；不同文件夹里可以有同名文件。"
+                "每个格子右边会显示时长（wav 瞬间读出，mp3 等首次读一下就好）。",
+            ),
+            (
+                "3｜拖上轮盘",
+                "设置窗口 →「音效库」→ 把音效拖到轮盘格子上。内圈 8 格，满了自动用外圈，最多 20 格。"
+                "一抓起音效，轮盘中间就会亮起来并写着「拖到此处添加音效」（不用等到拖进轮盘），"
+                "拖到中间松手就追加到末尾；把轮盘上的格子拖回音效库 = 下盘（文件还在）。\n"
+                "压缩包里已经排好一组示例，随便改。你自己删掉或下盘的音效不会自己补回来"
+                "（想把整盘重置，就删掉 sounds.json 再启动）。",
+            ),
+            (
+                "4｜实战怎么按",
+                "长按 Y（默认 0.25 秒）→ 轮盘出现 → 鼠标划方向 → 松开就播。\n"
+                "圆点在正中松手：正在响就停掉，同时软件进入暂停（所有快捷键暂时失效）。"
+                "解除有两条路：再按住热键、在中心松手一次；或者直接在轮盘上选个音效，播完顺手就恢复了。\n"
+                "暂停期间轮盘键和「切换轮盘」的键都照常能用（它们不发声，不算破例），"
+                "换一套轮盘之后仍然是暂停状态，不会把暂停顺手解掉。\n"
+                "轮盘弹着时点鼠标左键 / 右键：立刻收起，什么都不播，这一按也不会再弹。\n"
+                "单击 Y（不开轮盘）：直接放这套轮盘上次响过的那个，一次都没放过就放第一格。\n"
+                "勾上「预选模式」之后改成两步：长按弹盘、划到某格松手只是「选中」（屏幕上会闪一下名字），"
+                "再单击一次呼出键才真的放出来——适合先瞄好、等真需要时再按。\n"
+                "中空松手那一下如果觉得「啪」地切断太生硬，「轮盘」页最下面有「停止与淡出」，"
+                "开启后按设定时长慢慢收尾（条件停止键和连击打断仍然是快速掐掉，不然连击会糊）。",
+            ),
+            (
+                "5｜调每个音效",
+                "右下卡片里能调：音量、变调（不改变 / 连续升调 / 连续降调 / 每次随机 / 固定变调）、"
+                "变调幅度、速度（不改 / 加快 / 变慢）、连击窗口、单独的快捷键。\n"
+                "例子：设成「升调 ±2 半音、窗口 2500ms」，2.5 秒内连按三次就是原调 → +2 → +4；"
+                "停手超过 2.5 秒，下次又从原调开始。",
+            ),
+            (
+                "6｜多套轮盘（最多 8 套）",
+                "「轮盘」页右侧「轮盘库」里一行一套：点「另存为新轮盘」把当前这套复制一份再改名，"
+                "「切换到这套」立刻换过去，「重命名 / 清空 / 删除」按需用（最后一套删不掉）。\n"
+                "每套各自记着自己的格子布局、每个格子的音量/变调/速度/热键，还有这套自己的颜色，"
+                "切过去就是完整的一套，不用重新调。\n"
+                "切换还有两种快法：托盘右键 →「轮盘」子菜单直接选；或者按住「切换轮盘」热键"
+                "（在「快捷键」页绑，默认不绑），屏幕中间弹出选择器，鼠标指向哪套松手就是哪套，"
+                "正在响的音效不会被打断。\n"
+                "选择器里一圈都是轮盘名，鼠标指到哪一格，"
+                "那一整块就亮成它自己的颜色，中间的名字和鼠标点也跟着变色，",
+            ),
+            (
+                "6b｜每套轮盘绑自己的键",
+                "「轮盘」页「轮盘库」下面有个「呼出键」框：选中哪套就改哪套的键。\n"
+                "长按它：直接把这一套的轮盘弹出来（不用先按「切换轮盘」）；"
+                "单击它：放这套盘上次响过的那个音效，轮盘不弹。\n"
+                "它不会改掉「当前轮盘」：你现在用 A，长按 B 的键弹的是 B、放的是 B 的音效，"
+                "但松手之后主呼出键弹出来的还是 A。想永久换成 B 就用「切换轮盘」那个键、"
+                "托盘菜单，或者在「轮盘库」里点一下 B。\n"
+                "八套盘可以各绑一个键，边打边换盘全靠单手。留空就是只能用主热键进来。\n"
+                "绑之前会查重：跟主呼出键、或跟别的盘撞了会直接拒绝并说明撞的是谁——"
+                "两套盘绑同一个键等于永远只切到第一套。",
+            ),
+            (
+                "7｜配色（应用主题色 / 轮盘颜色是两回事）",
+                "「轮盘」页上方「配色」：\n"
+                "· 应用主题色 —— 整个设置窗口的配色（按钮、进度条、高亮全跟着它变）\n"
+                "· 本套轮盘颜色 —— 只决定这个轮盘画出来是什么颜色\n"
+                "两边都能点「选取…」自己调，不再是只有绿橙蓝紫四个死选项；下面四个小圆点是快捷预设。"
+                "勾「跟随主题色」就一直是应用那个色，不勾可以单独设。",
+            ),
+            (
+                "8｜组合音效",
+                "「音效库」页最底部 →「＋ 新建组合」→ 左边双击加入（同一音效可以重复加）→ "
+                "每一行设触发条件、延迟、音量、变调、速度 → 拖上轮盘，或者给它绑个专属热键。\n"
+                "音效多到要翻半天？左边列表上方有搜索框，打几个字就筛出匹配项并自动滚到第一个，"
+                "按回车直接加进组合。\n"
+                "两个现成配方：① A 原版 → 0.2 秒后 A 升调加速 → 再 0.2 秒后 A 降调减速 → A 播完接 B；"
+                "② ABCD 每次随机抽 3 个、间隔 1 秒。",
+            ),
+            (
+                "9｜让队友也听到",
+                "在「语音输出」页选择实体麦克风。Windows 识别到自带驱动后，启用送声并在游戏中选择 Jinkra Virtual Mic。"
+                "驱动缺失时仍可本地播放和测试实体麦克风。",
+            ),
+            (
+                "10｜其它",
+                "导出 WAV（可丢进剪辑软件）、开机自动启动开关、换电脑时整个文件夹拷走即可"
+                "（配置和音效都在里面）。",
+            ),
+        ]
+        for head, text in steps:
+            s3.para(head, "head")
+            s3.para(text)
+
+        # ---- 补充：触发方式与条件解锁（v0.9）----
+        s3.para("补充｜触发方式与条件解锁", "head")
+        s3.para(
+            "右下那张卡片多了两行：「触发」和「条件」。它们决定快捷键按下之后"
+            "到底什么时候响、什么时候停，以及要不要先按解锁键。"
+        )
+        s3.para("触发（四选一）", "head")
+        s3.para(
+            "· 点击触发（默认）：按下就响一次，松手不管。和以前的版本完全一样。\n"
+            "· 长按触发：按住一直响，松手立刻停；再按一次会从头开始。"
+            "适合引擎声、警报这种「按住才有」的声音。\n"
+            "· 松手触发：按下不出声，松手的那一下才响。常和长按触发配对，"
+            "做成「按住放前奏、松手接下一句」。\n"
+            "· 长按连续触发：按下先响一次，之后只要还按着，就每隔一段时间"
+            "「再点一次」，间隔在那个 ms 框里调（50~2000）。\n"
+            "　 连击变调和变速会跟着一次次累加，所以按住不放就能做出"
+            "「越连越高的鬼畜」效果。整段按住只算 1 次点击，不会把解锁次数扣光。"
+        )
+        s3.para("条件（两档）", "head")
+        s3.para(
+            "· 无条件（默认）：按了就能响。\n"
+            "· 条件解锁：先按一下「解锁键」，这个音效才能在「解锁时间」内、"
+            "「解锁次数」内被触发。\n"
+            "　 解锁时间 0（显示「不限时」）= 一直有效，直到次数用完；\n"
+            "　 解锁次数 0（显示「不限次」）= 只看时间；\n"
+            "　 两个都 0 = 按一次解锁键，之后永远能用（留神别一直开着）。\n"
+            "　 时间到了只是「不能再触发新的」，正在响的声音会继续响完，不会被掐断。\n"
+            "　 同一个解锁键按一下，名下所有音效一起放开，各自算各自的时间和次数；"
+            "重复按是刷新，不叠加。"
+        )
+        s3.para("停止（条件停止键，v0.9.0 新增）", "head")
+        s3.para(
+            "· 在「停止」那一行填一个键（点右边 ＋ 还能再加，最多 3 个）。"
+            "按一下：这个音效立刻停，同时重新上锁 —— 想再触发要重新按解锁键。\n"
+            "· 停的是「这个音效此刻正在响的所有声音」：快捷键按的、轮盘点的、"
+            "长按连发出来的都一起收；按下它之前已经响了几声也不留。\n"
+            "· 条件解锁时是「停 + 上锁」；无条件音效设了它就是「按一下就停」。\n"
+            "· 按住不放只停一次；好几个音效填同一个停止键，按一下一起停。"
+        )
+        s3.para("打断（连击时停掉上一次，v0.9.1 新增）", "head")
+        s3.para(
+            "· 同一个音效还没放完就又按了一次，两次怎么处理，由「打断」那一行决定。\n"
+            "· 不勾（默认）：两声叠在一起响。笑声、喊声这种越叠越热闹的适合这样。\n"
+            "· 勾上：先把上一声掐掉，再从头放。长句子、整段台词建议勾 —— "
+            "不然连按会听见几层不同进度糊在一起。\n"
+            "· 只影响这一个格子；快捷键、轮盘点选、长按连发都按它执行。"
+        )
+        s3.para("按键（能绑的又多了）", "head")
+        s3.para(
+            "· 键盘现在几乎全能绑：字母、主键区数字、F1~F24、空格/Tab/回车/Esc/Caps、"
+            "逗号句号斜杠分号引号、减号等号方括号反斜杠反引号、方向键 ↑↓←→、"
+            "Insert/Home/End/PageUp/PageDown、小键盘 0~9 与 * + - . /、NumLock、"
+            "PrtSc/ScrLk/Pause、菜单键（App）。\n"
+            "· 小键盘单独算一套：绑「小键盘5」，按主键区的 5 不会响，反之亦然。"
+            "绑小键盘数字时 NumLock 要开着 —— 关着的时候小键盘发的是方向键那一套。\n"
+            "· 鼠标多了横向滚轮：滚轮往左右拨，框里显示「横滚←」「横滚→」。\n"
+            "· 仍然绑不了：Delete / Backspace（在这两个框里它们是「清空绑定」的意思）、"
+            "单独 Win 键（跟开始菜单抢）、多媒体键（音量、播放那些）、Fn、输入法转换键 —— "
+            "这几个系统层就不当普通按键发出来，程序收不到，不是漏做。"
+        )
+        s3.para("窗口大小（v0.9.2 新增）", "head")
+        s3.para(
+            "· 鼠标贴到窗口边上会变成双箭头，按住就能拖大拖小（八个方向都行）。\n"
+            "· 拉大之后左边的音效库跟着变宽（最多 760px），格子里能看到的字更多；\n"
+            "  最小 980×860，再小右下角的参数卡片就放不下了。\n"
+            "· 关掉窗口时会记住大小和位置，下次打开还是这样。换了显示器或分辨率变小，\n"
+            "  窗口会自动挪回屏幕内，不会跑到看不见的地方。"
+        )
+        s3.para("音效库筛选（v0.9.2 新增）", "head")
+        s3.para(
+            "· 搜索框下面多了一个文件夹下拉框：默认「全部文件夹」，选「根目录」只看第一层，\n"
+            "  选某个子文件夹就只看那一坨。\n"
+            "· 和搜索框叠加生效：先选文件夹再打关键字，范围更小更快。\n"
+            "· 文件名太长会用省略号结尾（鼠标停上去看全名），格子宽度不会再被长名字\n"
+            "  撑开、把右边那一列挤出窗口 —— 这是 v0.9.2 修掉的一个老毛病。"
+        )
+        s3.para("音效「自己没了」？先看这里（v0.9.2 加固）", "head")
+        s3.para(
+            "· sounds.json 旁边现在会有 sounds.json.bak（上一次配置的备份）。\n"
+            "  主文件读不出来（写到一半断电、被杀、手改坏）会自动用备份顶上。\n"
+            "· 文件只是暂时不在（网盘没同步下来、移动硬盘没插）时，它的参数不会被删，\n"
+            "  而是收进配置的「暂存区」。把文件放回 sounds、名字不变，它会自动回到\n"
+            "  轮盘原来的位置，音量/变调/快捷键/条件全都还在。\n"
+            "· 有暂存项时，音效库顶部会有一行橙色提示。\n"
+            "· 如果某次启动一个音效都没扫到（比如 sounds 在没插上的硬盘里），\n"
+            "  程序不会当成「你把它们删了」，配置原封不动。\n"
+            "· 真要恢复出厂：删掉 sounds.json 再启动，会按 sounds 里的文件重新排满。"
+        )
+        s3.para("手柄（v0.9.1 新增）", "head")
+        s3.para(
+            "· 音效和组合的「快捷键」框都能录 Xbox 手柄：点进框，按一下手柄按钮，"
+            "框里显示「手柄 A」就是绑好了。\n"
+            "· 认 A/B/X/Y、LB/RB、LT/RT（按过一半算按下）、十字键、左右摇杆按下、"
+            "View/Menu；蓝牙和有线都行。\n"
+            "· 手柄按钮就是一个普通按键：触发方式、全局通用、条件解锁/停止都照常生效；"
+            "每个音效仍然只有一个快捷键，录了手柄会替换掉键盘绑定。\n"
+            "· 断线时正在长按/连发的声音会直接结束，不会当成「松手」再放一声；"
+            "重连约一秒内恢复，连上时按着的按钮要先松开。\n"
+            "· 程序只读手柄，不拦游戏；轮盘的呼出和轮盘里选择仍然用键盘/鼠标。"
+        )
+
+        s3.para("一个现成玩法：长按播组合、松手播另一句", "head")
+        s3.para(
+            "1. 建组合「AAA」，挂鼠标左键，「触发」选长按触发；「条件」选条件解锁，"
+            "解锁键 G、解锁时间 5000ms、次数不限。\n"
+            "2. 建音效「B」，也挂鼠标左键，「触发」选松手触发；「条件」同样选条件解锁，"
+            "解锁键 G、不限时、次数 1。\n"
+            "3. 效果：不按 G 时点左键什么都不发生；按一下 G 之后长按左键，AAA 起播，"
+            "松手 AAA 停、同时播 B。\n"
+            "4. 就算按完 G 过了 4.9 秒才按下左键，AAA 也照样能响 —— 解锁只决定"
+            "「能不能开始」，不负责「掐断」。\n"
+            "5. 想随时反悔：给两个音效都填一个停止键（比如 3）。按 3 时正在响的"
+            "立刻哑掉、锁也重新扣上，想再响得重新按 G。\n"
+            "注意：一个键挂好几个音效是允许的，上面这种就是两个音效共用一个键，"
+            "各自的触发方式分别生效。"
+        )
+
+        # ---- 补充：全局通用（v0.9）----
+        s3.para("补充｜全局通用（快捷键不跟轮盘走）", "head")
+        s3.para(
+            "每个音效的「快捷键」框右边都有一个「全局通用」勾选框。默认不勾，"
+            "这时这个快捷键只在它所在的那套轮盘上使用。\n"
+            "勾上之后就不一样了：切换到别的轮盘，按这个键照样能触发它 —— "
+            "适合「不管在用哪套轮盘，这几个声音都想随手按得到」的情况。\n"
+            "· 勾了之后，它的音量、变调、长按方式仍然按它自己那套轮盘的设置来，"
+            "不会因为切了轮盘就变回默认值。\n"
+            "· 没绑快捷键时勾了也不起作用，鼠标停在勾选框上会有提示。\n"
+            "· 组合音效也有这一项。组合的定义是所有轮盘共用的，但它绑的那个键"
+            "在别的轮盘上还算不算数，仍然单独决定 —— 勾上之后，在别的轮盘按它"
+            "也能把这条组合放出来。\n"
+            "· 如果这个键同时被「呼出轮盘」「顺序播放」这类全局键占着，"
+            "音效仍然会让路（按下不响），「快捷键」页顶部会标出来。"
+        )
+
+        # ================= 四、常见问题 =================
+        # 默认展开 + 主题色高亮：小白遇到问题第一反应是翻这里，
+        # 让它藏在折叠条后面等于白写。
+        s4 = self._new_section("四、常见问题", expanded=True, hot=True)
+        faq = [
+            (
+                "Q1 长按 Y 没反应、轮盘不出来？",
+                "按这个顺序查：\n"
+                "① 设置窗口是不是就在最前面？它是当前窗口时热键不响应（免得在里面打字把轮盘弹出来）。"
+                "点一下游戏窗口让它回到前台就好 —— 设置窗口留在后台开着没关系。\n"
+                "② 当前这套轮盘是不是空的？一个音效都没上盘时按了不会有反应，"
+                "日志里会写「当前这套轮盘是空的」。\n"
+                "③ Y 是不是被游戏占用了？换个 F9 之类不常用的键试试。\n"
+                "④ 游戏是不是「独占全屏」？它会把轮盘吞掉，改成无边框窗口就好。\n"
+                "⑤ 程序还在不在？看右下角托盘的圆环图标。\n"
+                "⑥ 如果游戏以管理员身份运行且热键无效，可右键以管理员身份运行本程序。\n"
+                "另外「长按时长」调得太大时，按不够久也不会弹。",
+            ),
+            (
+                "Q2 全屏游戏里看不到轮盘？",
+                "同 Q1：改用「无边框窗口」或「窗口化全屏」。",
+            ),
+            (
+                "Q3 队友听不到，但我自己听得到？",
+                "打开「语音输出」里的送声开关，并确认游戏的麦克风选成该页显示的设备。"
+                "如果没有这个设备，请先检查「语音输出」里的驱动状态。",
+            ),
+            (
+                "Q4 队友听得到，但我自己听不到？",
+                "在「语音输出」里打开「音效也从自己的耳机里放出来」，并调高「本地监听」音量。"
+                "Jinkra 优先使用 Windows 默认的实体播放设备。若有多个耳机或扬声器，可在 Windows 声音设置里选定默认设备。"
+                "打开 jinkra_roulette.log 并搜索「耳机输出=」，可查看实际使用的设备。",
+            ),
+            (
+                "Q5 游戏里没有 Jinkra Virtual Mic？",
+                "打开「语音输出」并点击「重新检测」。系统须先成功安装正式签名的 Jinkra 虚拟音频驱动。"
+                "安装完成后，可重启语音软件刷新录音设备列表。",
+            ),
+            (
+                "Q6 某个音效不响？",
+                "三种可能：格式不被解码器支持（转成 wav 试试）、文件不在 sounds 目录里、"
+                "或者它被拖下了轮盘。查 jinkra_roulette.log 里有没有报错。",
+            ),
+            (
+                "Q7 变调之后音效变长 / 变短了？",
+                "正常。变调是按「不改变语速」的方式重采样的，音高变了长度也会跟着变"
+                "（降 3 个半音大概会长两成）。想保持长度又改音高，目前做不到，"
+                "可以用速度参数往回补一点。",
+            ),
+            (
+                "Q8 组合只响了一部分？",
+                "八成是有成员的音效文件被删了或改了名——编辑器里会标「⚠ 缺失」，"
+                "换一个顶上就行。也可能是它设了「冷却」或「最多同时」，被自己拦下了。",
+            ),
+            (
+                "Q9 杀毒软件 / Defender 报毒？",
+                "打包出来的程序被启发式规则误判很常见（没有签名证书）。可以加白名单；"
+                "更稳妥的做法是看代码自己跑——没有加密，也没有混淆。",
+            ),
+            (
+                "Q10 会被封号吗？",
+                "见第一节最后那句。这个判断只能你自己做，我能做的是把程序实际干了什么说清楚。",
+            ),
+            (
+                "Q11 日志里记了我的按键，是不是在监视我？",
+                "记的是按键名字（y、mouse_left），用来排查「为什么没触发」。"
+                "它不看你打的字、不看窗口内容、不往外传。介意可以直接删掉这个文件，程序会自己重建。",
+            ),
+            (
+                "Q12 更新版本会不会丢配置？",
+                "不会。只替换 exe 就行，config.json、sounds.json、sounds 目录都保留。",
+            ),
+            (
+                "Q13 能用在别的游戏上吗？",
+                "能，它就是个全局热键 + 屏幕轮盘，不认游戏。第一节里的风险判断同样适用。",
+            ),
+            (
+                "Q14 按住「切换轮盘」热键没反应？",
+                "「快捷键」页里这一项默认是空的，得自己先绑一个键。绑好了还不行，"
+                "大概率是跟游戏里同一个键撞了——换一个不常用的键最省事。",
+            ),
+            (
+                "Q15 音效库里时长显示「—」？",
+                "那个文件的长度没读出来（文件损坏，或者系统缺对应解码器）。不影响播放，"
+                "只是算不出多长；转成 wav 就能正常显示。",
+            ),
+            (
+                "Q16 存了好几套轮盘，换回旧版本程序会不会乱？",
+                "不会。sounds.json 里除了多套轮盘，顶层还单独留了一份当前这套的旧格式记录，"
+                "旧版本读的正是那份，所以照样是你的格子。同一份配置，两个版本各读各的。",
+            ),
+            (
+                "Q17 提示「xxx 不支持 48kHz 立体声」，麦克风用不了？",
+                "这句话是 v0.7.6 及更早版本才有的，那时候程序只认 48kHz 立体声浮点这一种格式，"
+                "蓝牙耳麦、只给 44.1kHz 的 USB 麦会被直接判死。换成 v0.7.7 以后的版本就好。\n"
+                "新版里同一台麦克风会先把所有能试的格式试穿（48k 立体声 → 单声道 → 44.1k → 16k），"
+                "才轮到换下一台设备；就算设备谎报「支持」，真打不开也会自动往下退，"
+                "状态栏会写「已自动适配到 16kHz 单声道」。"
+                "真起不来时，日志里会写清楚试了几种格式、每一种是因为什么失败的。",
+            ),
+            (
+                "Q18 按什么都没反应，是不是卡死了？（暂停功能）",
+                "多半是你自己把软件「暂停」了，不是卡死。\n"
+                "怎么进去的：长按轮盘键弹出轮盘、光标停在中间那个圆点上松手。"
+                "这一下本来是「别放，停」，现在顺手把软件也暂停了，免得误触。\n"
+                "怎么出来（两条路，任选其一）：\n"
+                "　 ① 再长按轮盘键，光标停在圆点上松手一次；\n"
+                "　 ② 长按轮盘键，正常划到某个音效上松手——音效会播，同时也解除暂停。\n"
+                "　 暂停和恢复的瞬间屏幕中间会闪一个小提示，一闪就消失，不会一直挂在上面。\n"
+                "　 嫌这个功能碍事？目前没法单独关掉它，但只要你不在圆点上松手就不会触发。",
+            ),
+            (
+                "Q19 绑了快捷键，按下去却没声音？",
+                "先看那个音效「条件」里是不是选了「条件解锁」——选了就得先按一下解锁键。\n"
+                "再看「触发」：设成「松手触发」时，按下本来就不该响，得松手才响；"
+                "设成「长按触发」时，松手就停，声音会很短。\n"
+                "最后看「快捷键」页顶部的提示：如果这个键同时也是呼出轮盘 / 顺序播放 /"
+                "顺序播放 / 切换轮盘，全局键优先，挂在它上面的音效会被让路，换个键就好。\n"
+                "另外轮盘弹出的时候按鼠标左键/右键是「取消呼出」，那一下也不会播音效。",
+            ),
+            (
+                "Q20 直播想让观众听到音效，但自己不想听？",
+                "「语音输出」页勾上「把音效和麦克风送进游戏语音」，使用自动配对，"
+                "然后把「音效也从自己的耳机里放出来」这个勾**取消**。\n"
+                "这样音效只往虚拟声卡那一路走，你自己的耳朵里一点都没有。\n"
+                "注意程序有条兜底：如果「本地监听」和「送对方」两个都关掉，"
+                "它会自动把监听打开（不然整个软件就成了哑巴），所以不能靠「全关」来实现。\n"
+                "直播或语音软件的音频输入选成本页显示的录音设备。"
+                "如果不想把自己的说话声一起送过去，把「原声·送对方」拉到 0%。",
+            ),
+            (
+                "Q21 用着用着老听到「叮」的提示音？",
+                "先把锅分清楚：本程序的所有提示（切轮盘、麦克风掉线、重新扫描完成、"
+                "启动就绪）都画在屏幕下方那条半透明小条里，一句都不出声。\n"
+                "所以如果还在响，大概率不是它。常见的两个来源：\n"
+                "· Windows 的通知音：设置 → 系统 → 通知 → 找到对应程序 → 关掉「播放声音」\n"
+                "· 耳机 / USB 声卡插拔时系统自己的设备音（换接口、线松了都会响）\n"
+                "想确认是不是本程序：把托盘图标右键退出，还响就是别人的。",
+            ),
+        ]
+        for q, a in faq:
+            s4.para(q, "head")
+            s4.para(a)
+
+        root.addStretch(1)
+
+    # ---- 组装 ----
+    def focus_faq(self) -> None:
+        """跳到「四、常见问题」：展开、并把滚动条拉过去。首次启动引导用。"""
+        target = None
+        for sec in self.sections:
+            if sec.title.startswith("四、"):
+                sec.set_expanded(True)
+                target = sec
+                break
+        if target is None:
+            return
+        # 展开后高度还没算完，等布局跑一轮再滚，否则滚不到位
+        QTimer.singleShot(0, lambda: self.scroll.ensureWidgetVisible(target, 0, 0))
+
+    def _new_section(self, title: str, expanded: bool = False, hot: bool = False) -> _FoldSection:
+        sec = _FoldSection(title, expanded=expanded, hot=hot)
+        self.sections.append(sec)
+        self.root_lay.addWidget(sec)
+        return sec
+
+    @staticmethod
+    def _link_row(prefix: str, url: str) -> QWidget:
+        """一行外链：文字说明 + 可点的链接。
+
+        用 QDesktopServices 让系统拿默认浏览器打开 —— 程序自己不发任何请求，
+        「不联网」那句话仍然成立。
+        """
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(4)
+        lab = QLabel(prefix)
+        lab.setStyleSheet("color:#415f72;font-size:12px;")
+        h.addWidget(lab)
+        link = QLabel(f'<a href="{url}" style="color:#14678a;">{url}</a>')
+        link.setOpenExternalLinks(True)
+        link.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        link.setCursor(Qt.PointingHandCursor)
+        link.setToolTip("用系统默认浏览器打开（本程序自己不联网）")
+        h.addWidget(link)
+        h.addStretch(1)
+        return w
+
+
+# ---------------------------------------------------------------- 右侧
+
+def _drag_pixmap(text: str, width: int = 150, height: int = 38) -> QPixmap:
+    """拖动时跟着鼠标走的那个小卡片。"""
+    pm = QPixmap(width, height)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setBrush(QColor(30, 34, 42, 238))
+    p.setPen(QPen(accent(255), 1.5))
+    p.drawRoundedRect(QRectF(0.5, 0.5, width - 1, height - 1), 8, 8)
+    p.setPen(QColor(234, 236, 242))
+    f = QFont(UI_FONT)
+    f.setPointSize(8)
+    p.setFont(f)
+    fm = p.fontMetrics()
+    p.drawText(
+        QRectF(12, 0, width - 22, height),
+        Qt.AlignVCenter | Qt.AlignLeft,
+        fm.elidedText(text, Qt.ElideRight, width - 26),
+    )
+    p.end()
+    return pm
+
+
+# 预览框比轮盘本身多留的边（左右各 PREVIEW_PAD/2）。
+# v0.9 从 48 收窄到 36：右下角那张卡片多了「触发 / 条件」两行，
+# 少留点白，最小窗口、最大直径时预览也不会被裁掉。
+PREVIEW_PAD = 36
+
+
+def preview_radius_of(cfg: dict) -> int:
+    """预览用的轮盘半径：跟「直径」等比，但夹在 150~235 之间。
+
+    180（默认直径）对应 190，比老版本那个 172 大约 10%——用户反馈预览
+    "看着比以前小一圈"，实际上是无处安放的留白太多，整体放大一点点就正常了。
+    直径调大时预览框跟着长，否则把轮盘调到 215、预览还停在老尺寸会更显小。
+    上限 210 是为了别把预览卡片撑破：最小窗口（980×800）下卡片高度只有 468，
+    预览控件 210×2+36=456 刚好塞得下。
+    """
+    try:
+        r = int(round(float(cfg.get("wheel_radius", 180)) * 190.0 / 180.0))
+    except (TypeError, ValueError):
+        r = 190
+    return max(150, min(210, r))
+
+
+class WheelPreview(sr.WheelWidget):
+    """配置窗口里的轮盘：能接收拖放，也能把扇区拖出去。
+
+    拖放规则（v0.5.5 起）
+      · 从音效库拖到某个格子 -> 放进/替换那一格（格子数不变）
+      · 从音效库拖到中间圆 -> 追加到末尾（装满内圈 8 个后自动进外圈）
+      · 外圈空位可以放东西，也可以被拖进拖出
+      · 轮盘上拖动格子到另一个格子 -> **两格互换**（拖到外圈空位则原位变空）
+      · 内圈和外圈之间也能互换，前提是外圈那一格有音效；
+        内圈拖到外圈空位仍然拒绝（内圈 8 格必须满，空一格整个轮盘就不好判定）
+      · 拖到左侧音效库 -> 从轮盘移除
+    """
+
+    # (文件名, 目标槽位)：目标槽位为 ADD_TO_END 表示追加到末尾
+    lib_dropped = Signal(str, int)
+    slot_dropped = Signal(int, int)   # (源位置, 目标位置)
+    slot_clicked = Signal(int)
+
+    def __init__(self, cfg: dict, bank: sr.SoundBank) -> None:
+        super().__init__(cfg, embedded=True)
+        self.bank = bank        # 构造时就挂上，别依赖调用方再补一刀
+        self.setAcceptDrops(True)
+        self.drop_target: int | None = None
+        self._press_pos: QPoint | None = None
+        self._press_idx: int | None = None     # 音效下标（能不能拖/点）
+        self._press_sid: int | None = None     # 槽位号（拖出去要带的位置）
+        self._dragging = False
+        # 这一趟拖拽是从音效库来的吗？决定中心提示说"添加"还是"移到末尾"
+        self._drag_from_lib = True
+        # 音效库里是不是正拖着一个东西（由 QDrag.exec 的生命周期驱动）。
+        # 刻意不用"鼠标进没进轮盘"来判：用户要的是一开始拖就亮中心，
+        # 光标还在左边的音效库上方时也应该看见"拖到此处添加音效"。
+        self._lib_drag = False
+
+    # ---- 几何 ----
+    def _center(self) -> tuple[float, float]:
+        return self.width() / 2.0, self.height() / 2.0
+
+    def slots(self) -> int:
+        return max(1, len(self.bank) if self.bank is not None else 0)
+
+    def count(self) -> int:
+        return len(self.bank) if self.bank is not None else 0
+
+    @property
+    def center_hint(self) -> str:
+        """拖音效进来时中心显示什么。
+
+        只要是从音效库拖起来的，中心就从头到尾提示 —— 不等鼠标进轮盘，
+        也不等它走到中心。用户抓起一个音效的瞬间就该知道往哪儿放。
+        """
+        if self._lib_drag and self._drag_from_lib:
+            return "拖到此处添加音效"
+        return ""
+
+    @property
+    def center_sub_hint(self) -> str:
+        """中心下面那行小字；还没停在中心时不写，免得和"放进这一格"打架。"""
+        if self._lib_drag and self._drag_from_lib and self.drop_target == ADD_TO_END:
+            return "松手追加到末尾"
+        return ""
+
+    # ---- 库里的拖拽开始/结束（外部驱动）----
+
+    def begin_lib_drag(self) -> None:
+        """音效库那边刚把一个音效拖起来：立刻点亮中心。
+
+        必须同步重绘（repaint 而不是 update）：调用方紧接着就进
+        QDrag.exec() 阻塞了，排队的重绘要等到拖完才画，等于没亮。
+        """
+        self._lib_drag = True
+        self._drag_from_lib = True
+        self.repaint()
+
+    def end_lib_drag(self) -> None:
+        """拖拽结束（松手、取消、拖到窗口外都算）：熄灯。"""
+        self._lib_drag = False
+        self.drop_target = None
+        self.update()
+
+    def ring_geometry(self) -> tuple[dict, float]:
+        """当前预览的环布局 + 缩放比（只是预览框的适配比例）。
+
+        必须和 _paint_body 用同一个系数（paint_scale），否则预览里的
+        点选/拖放会整体偏一圈。预览固定按 100% 画，不吃「整体大小」。
+        """
+        scale = self.paint_scale()
+        return sr.ring_layout(self.cfg, self.count(), scale), scale
+
+    def _to_world(self, pos: QPoint) -> tuple[float, float]:
+        cx, cy = self._center()
+        _, scale = self.ring_geometry()
+        s = scale if scale > 0 else 1.0
+        return (pos.x() - cx) / s, (pos.y() - cy) / s
+
+    def _dist_px(self, pos: QPoint) -> float:
+        """到圆心的距离，用控件像素 —— 和 geo 里的半径同一套单位。"""
+        cx, cy = self._center()
+        return math.hypot(pos.x() - cx, pos.y() - cy)
+
+    def inside_wheel(self, pos: QPoint) -> bool:
+        geo, _ = self.ring_geometry()
+        return self._dist_px(pos) <= geo["extent"] + 12
+
+    def slot_at(self, pos: QPoint) -> int | None:
+        """控件坐标 -> 槽位号（含空着的外圈位置）；中空区 / 轮盘外返回 None。
+
+        槽位号是"位置"：0~7 内圈，8~19 外圈 12 个固定位置。
+        外圈允许留空，所以这里不管那一格有没有音效，位置算得出来就返回。
+        """
+        if self.count() == 0:
+            return None
+        geo, _ = self.ring_geometry()
+        dist = self._dist_px(pos)
+        if dist <= geo["hole"] * 0.98 or dist > geo["extent"] + 12:
+            return None
+        dx, dy = self._to_world(pos)
+        if geo["two_ring"] and dist >= geo["outer_r0"]:
+            p = sr.sector_from_delta(dx, dy, sr.OUTER_MAX, 0.0)
+            return None if p is None else sr.INNER_MAX + p
+        return sr.sector_from_delta(dx, dy, int(geo["inner_n"]), 0.0)
+
+    def index_of_slot(self, sid: int | None) -> int | None:
+        """槽位号 -> 音效下标；那一格空着返回 None。"""
+        if self.bank is None:
+            return None
+        return sr.index_of_slot(sid, self.count(), sr.outer_index_map_of(self.bank))
+
+    def _target_at(self, pos: QPoint, from_lib: bool = True) -> int | None:
+        """拖放落点：槽位号（放/换到那一格）、ADD_TO_END（追加）、None（不接受）。
+
+        外圈的任意位置都收 —— 空格子能放进去，有内容的两格互换。
+        中心只收"从音效库拖进来"的添加：轮盘内拖到中心没有任何意义
+        （那里不是槽位，swap_slots 也不认负目标），拒绝掉比给个假提示好。
+        """
+        geo, _ = self.ring_geometry()
+        dist = self._dist_px(pos)          # 控件像素（geo 已按 scale 缩过）
+        if self.count() == 0:
+            return ADD_TO_END if dist <= geo["extent"] + 12 else None
+        if dist <= geo["hole"] * 0.98:
+            return ADD_TO_END if from_lib else None
+        sid = self.slot_at(pos)
+        if sid is None:
+            return None
+        if sid < sr.INNER_MAX:
+            return sid if sid < self.count() else None
+        return sid
+
+    # ---- 鼠标：单击选中，按住移动则发起拖放 ----
+    def mousePressEvent(self, e) -> None:  # noqa: N802
+        if e.button() != Qt.LeftButton:
+            return
+        self._press_pos = e.position().toPoint()
+        self._press_sid = self.slot_at(self._press_pos)
+        self._press_idx = self.index_of_slot(self._press_sid)
+        self._dragging = False
+
+    def mouseMoveEvent(self, e) -> None:  # noqa: N802
+        if self._press_pos is None or not (e.buttons() & Qt.LeftButton):
+            return
+        pos = e.position().toPoint()
+        if (pos - self._press_pos).manhattanLength() < 10:
+            return
+        idx, sid = self._press_idx, self._press_sid
+        if idx is None or sid is None or self.bank is None or idx >= len(self.bank):
+            return
+        self._dragging = True
+        name = self.bank.items[idx].name
+
+        mime = QMimeData()
+        # 带的是"槽位号"而不是音效下标：外圈能留空，位置和序号不是一回事
+        mime.setData(MIME_SLOT, str(sid).encode("utf-8"))
+        mime.setText(name)
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.setPixmap(_drag_pixmap(self.bank.name_at(idx)))
+        drag.exec(Qt.MoveAction)
+        self._press_pos = None
+        self._press_sid = None
+        self._dragging = False
+
+    def mouseReleaseEvent(self, e) -> None:  # noqa: N802
+        if self._press_pos is not None and not self._dragging:
+            idx = self._press_idx
+            if idx is not None and self.bank is not None and idx < len(self.bank):
+                self.slot_clicked.emit(idx)
+        self._press_pos = None
+        self._press_sid = None
+        self._press_idx = None
+
+    # ---- 接收拖放 ----
+    def _accepts(self, mime) -> bool:
+        return mime.hasFormat(MIME_LIB) or mime.hasFormat(MIME_SLOT)
+
+    def dragEnterEvent(self, e) -> None:  # noqa: N802
+        md = e.mimeData()
+        if self._accepts(md):
+            self._drag_from_lib = md.hasFormat(MIME_LIB)
+            self.update()
+            e.acceptProposedAction()
+
+    def dragMoveEvent(self, e) -> None:  # noqa: N802
+        md = e.mimeData()
+        if not self._accepts(md):
+            return
+        self._drag_from_lib = md.hasFormat(MIME_LIB)
+        target = self._target_at(e.position().toPoint(), self._drag_from_lib)
+        if target != self.drop_target:
+            self.drop_target = target
+            self.update()
+        e.acceptProposedAction()
+
+    def dragLeaveEvent(self, e) -> None:  # noqa: N802
+        # 只清扇区高亮：拖动还在继续（鼠标可能只是移回左边的音效库），
+        # 中心的提示要留着，那是"这一趟拖拽还活着"的信号。
+        self.drop_target = None
+        self.update()
+
+    def dropEvent(self, e) -> None:  # noqa: N802
+        md = e.mimeData()
+        target = self._target_at(e.position().toPoint(), md.hasFormat(MIME_LIB))
+        self.drop_target = None
+        # 松手后 exec 马上就会返回并调 end_lib_drag()，这里不必自己清 _lib_drag
+        self.update()
+        if target is None:
+            e.ignore()
+            return
+        if md.hasFormat(MIME_LIB):
+            name = bytes(md.data(MIME_LIB)).decode("utf-8")
+            self.lib_dropped.emit(name, target)
+        elif md.hasFormat(MIME_SLOT):
+            src = int(bytes(md.data(MIME_SLOT)).decode("utf-8"))
+            self.slot_dropped.emit(src, target)
+        e.acceptProposedAction()
+
+    # ---- 拖放落点高亮 ----
+    def paintEvent(self, e) -> None:  # noqa: N802
+        super().paintEvent(e)
+        tgt = self.drop_target
+        if self.bank is None:
+            return
+        # 从音效库拖着东西时，中心从头亮到尾 —— 不必等鼠标走到轮盘上
+        hint_on = self._lib_drag and self._drag_from_lib
+        if not hint_on and tgt is None:
+            return
+
+        geo, _ = self.ring_geometry()
+        cx, cy = self._center()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setBrush(QColor(255, 255, 255, 44))
+        p.setPen(QPen(QColor(255, 255, 255, 170), 2.0, Qt.DashLine))
+
+        if hint_on:
+            # 已经在中心 = 全亮；还在某个扇区上 = 半亮，算个"预告"
+            hot = tgt == ADD_TO_END
+            r = geo["hole"] * 0.97
+            p.setBrush(QColor(accent(118 if hot else 58)))
+            p.setPen(QPen(accent_light(250 if hot else 165), 2.6, Qt.DashLine))
+            p.drawEllipse(QPointF(cx, cy), r, r)
+
+        if tgt is None or tgt == ADD_TO_END:
+            p.end()
+            return
+
+        geom = sr.slot_geometry(geo, tgt)   # tgt 已经是槽位号
+        if geom is None:
+            p.end()
+            return
+        r0, r1, start, span = geom
+        p.drawPath(sr.dial_pad_path(cx, cy, r0, r1, start, span))
+        p.end()
+
+
+class SlotDetail(QFrame):
+    """右侧下方：当前选中音效的详细参数。"""
+
+    setting_changed = Signal(str)    # 某个音效的参数变了
+    preview_requested = Signal(str)  # 想试听某个音效
+    edit_combo_requested = Signal(str)   # 想编辑某个组合（cid）
+
+    def __init__(self, scfg) -> None:
+        super().__init__()
+        self.scfg = scfg
+        self.current: str | None = None
+        self._is_combo = False
+        self._loading = False
+        self.setObjectName("Card")
+        self.setMinimumHeight(285)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 6, 16, 6)
+        lay.setSpacing(4)
+
+        head = QHBoxLayout()
+        self.title = _ElideLabel("未选中音效")
+        self.title.setObjectName("CardTitle")
+        head.addWidget(self.title, 1)
+        self.btn_combo = QPushButton("编辑组合")
+        self.btn_combo.setCursor(Qt.PointingHandCursor)
+        self.btn_combo.hide()
+        head.addWidget(self.btn_combo)
+        self.btn_play = QPushButton("试听")
+        self.btn_play.setObjectName("Primary")
+        self.btn_play.setFixedWidth(64)
+        head.addWidget(self.btn_play)
+        lay.addLayout(head)
+
+        self.body = QWidget()
+        body = QVBoxLayout(self.body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(3)
+
+        vol_row = QHBoxLayout()
+        vl = QLabel("音量")
+        vl.setFixedWidth(52)
+        vl.setStyleSheet("color:#3f6074;font-size:12px;")
+        vol_row.addWidget(vl)
+        self.volume = QSlider(Qt.Horizontal)
+        self.volume.setRange(0, 200)
+        self.volume.setValue(100)
+        vol_row.addWidget(self.volume, 1)
+        self.vol_val = QLabel("100%")
+        self.vol_val.setFixedWidth(46)
+        self.vol_val.setStyleSheet(f"color:{accent_hex()};font-size:12px;font-weight:600;")
+        vol_row.addWidget(self.vol_val)
+        body.addLayout(vol_row)
+
+        pitch_row = QHBoxLayout()
+        self.lbl_pitch = pl = QLabel("变调")
+        pl.setFixedWidth(52)
+        pl.setStyleSheet("color:#3f6074;font-size:12px;")
+        pitch_row.addWidget(pl)
+        self.pitch_mode = QComboBox()
+        for mode in PITCH_MODES:
+            self.pitch_mode.addItem(PITCH_MODE_LABEL.get(mode, mode), mode)
+        pitch_row.addWidget(self.pitch_mode, 1)
+        # 幅度：升/降调时是"每次变多少"，随机时是"随机范围 ±N"
+        self.pitch_step = QComboBox()
+        for n in (1, 2, 3, 5, 7, 12):
+            self.pitch_step.addItem(f"±{n} 半音", float(n))
+        self.pitch_step.setToolTip(
+            "升调/降调：每次连击变化多少半音\n随机变调：随机范围（±N 半音）"
+        )
+        pitch_row.addWidget(self.pitch_step)
+        # 固定变调：直接变 N 半音（正升负降），只在"固定变调"模式下露出来
+        self.pitch_fixed = QDoubleSpinBox()
+        self.pitch_fixed.setRange(-24.0, 24.0)
+        self.pitch_fixed.setSingleStep(1.0)
+        self.pitch_fixed.setDecimals(1)
+        self.pitch_fixed.setSuffix(" 半音")
+        self.pitch_fixed.setToolTip(
+            "每次播放都直接变这么多半音：正数升调、负数降调。\n"
+            "比如 -5 就是把声音压沉 5 个半音。"
+        )
+        self.pitch_fixed.hide()
+        pitch_row.addWidget(self.pitch_fixed)
+        body.addLayout(pitch_row)
+
+        # 速度：时间拉伸，只改快慢不改音调，和上面那行互不影响
+        spd_row = QHBoxLayout()
+        self.lbl_speed = sl = QLabel("速度")
+        sl.setFixedWidth(52)
+        sl.setStyleSheet("color:#3f6074;font-size:12px;")
+        spd_row.addWidget(sl)
+        self.speed_mode = QComboBox()
+        for mode in SPEED_MODES:
+            self.speed_mode.addItem(SPEED_MODE_LABEL.get(mode, mode), mode)
+        self.speed_mode.setToolTip(
+            "连续播放时越按越快 / 越慢。\n"
+            "和\"变调\"不同：这个不会把嗓子变尖变沉，只是说话的语速变了。\n"
+            "两个可以同时开，比如又升调又加快。"
+        )
+        spd_row.addWidget(self.speed_mode, 1)
+        self.speed_step = QComboBox()
+        for pct in (5, 8, 10, 15, 20, 30):
+            self.speed_step.addItem(f"每次 {pct}%", pct / 100.0)
+        self.speed_step.setToolTip("每连击一次快/慢多少（上限 ±60%）")
+        spd_row.addWidget(self.speed_step)
+        body.addLayout(spd_row)
+
+        win_row = QHBoxLayout()
+        self.lbl_window = QLabel("连击窗口")
+        self.lbl_window.setFixedWidth(52)
+        self.lbl_window.setStyleSheet("color:#3f6074;font-size:12px;")
+        win_row.addWidget(self.lbl_window)
+        self.pitch_window = QSpinBox()
+        self.pitch_window.setRange(200, 10000)
+        self.pitch_window.setSingleStep(100)
+        self.pitch_window.setValue(2500)
+        self.pitch_window.setSuffix(" ms")
+        self.pitch_window.setToolTip("多少毫秒内再按算一次连击（变调和速度共用）")
+        win_row.addWidget(self.pitch_window)
+        # 随机模式下连击窗口没有意义：把这一格换成一句说明，比留个灰框清楚
+        self.lbl_rand_hint = QLabel("每次按都重新抽一个半音，不看连击窗口")
+        self.lbl_rand_hint.setObjectName("Hint")
+        self.lbl_rand_hint.setWordWrap(True)
+        self.lbl_rand_hint.setMaximumWidth(175)
+        self.lbl_rand_hint.hide()
+        win_row.addWidget(self.lbl_rand_hint)
+        # 固定变调同理：每次都一样，窗口没有意义
+        self.lbl_fixed_hint = QLabel("每次都直接变固定的半音数，不看连击窗口")
+        self.lbl_fixed_hint.setObjectName("Hint")
+        self.lbl_fixed_hint.setWordWrap(True)
+        self.lbl_fixed_hint.setMaximumWidth(175)
+        self.lbl_fixed_hint.hide()
+        win_row.addWidget(self.lbl_fixed_hint)
+        win_row.addStretch(1)
+        hl = QLabel("快捷键")
+        hl.setFixedWidth(52)
+        hl.setStyleSheet("color:#3f6074;font-size:12px;")
+        win_row.addWidget(hl)
+        self.hotkey = KeyBox("", 116, allow_gamepad=True)
+        win_row.addWidget(self.hotkey)
+        # 全局通用：勾上之后这个键不再跟着轮盘走。组合音效也有这一项 ——
+        # 组合的定义全盘共用，但"这个键在别的盘上还算不算数"仍然要单独决定。
+        # 文字用两字"全局"：这一行元素已经排满（连击窗口 + 快捷键 + 清除键），
+        # 四字在最小窗口下会把按键框挤扁，完整说明放提示里。
+        self.chk_global = QCheckBox("全局")
+        self.chk_global.setObjectName("GlobalChk")
+        self.chk_global.setToolTip(
+            "「全局通用」：勾上之后，这个快捷键不再跟着轮盘走，\n"
+            "切换到别的轮盘，按这个键照样能触发它。\n"
+            "不勾的时候只在它所在的这一套轮盘上生效（和以前一样）。\n"
+            "没绑快捷键时这一项不起作用。"
+        )
+        win_row.addWidget(self.chk_global)
+        body.addLayout(win_row)
+
+        # 组合条目专用说明：变调/变速在组合编辑器里逐项设
+        self.lbl_combo_hint = QLabel(
+            "组合的变调 / 变速在「编辑组合」里逐项设置，\n"
+            "这里只管整体音量和直按键。"
+        )
+        self.lbl_combo_hint.setObjectName("Hint")
+        self.lbl_combo_hint.setWordWrap(True)
+        self.lbl_combo_hint.hide()
+        body.addWidget(self.lbl_combo_hint)
+
+        # ---- 触发方式（v0.9）：按下响 / 长按响 / 松手响 / 按住连发 ----
+        trig_row = QHBoxLayout()
+        self.lbl_trigger = tl = QLabel("触发")
+        tl.setFixedWidth(52)
+        tl.setStyleSheet("color:#3f6074;font-size:12px;")
+        trig_row.addWidget(tl)
+        self.trigger_mode = QComboBox()
+        for mode in TRIGGER_MODES:
+            self.trigger_mode.addItem(TRIGGER_MODE_LABEL.get(mode, mode), mode)
+        self.trigger_mode.setToolTip(
+            "按下快捷键之后，这个音效什么时候响、什么时候停。\n"
+            "点击触发：按下就响一次（和以前一样）\n"
+            "长按触发：按住一直响，松手立刻停\n"
+            "松手触发：按下不出声，松手那一下才响\n"
+            "长按连续触发：按住不放就按间隔一直「点」下去，\n"
+            "　　　　　　　连击变调/变速会跟着累加"
+        )
+        trig_row.addWidget(self.trigger_mode, 1)
+        self.repeat_ms = QSpinBox()
+        self.repeat_ms.setRange(REPEAT_MS_MIN, REPEAT_MS_MAX)
+        self.repeat_ms.setSingleStep(10)
+        self.repeat_ms.setValue(200)
+        self.repeat_ms.setSuffix(" ms")
+        self.repeat_ms.setFixedWidth(94)
+        self.repeat_ms.setToolTip(
+            "长按连续触发的间隔：按住时每隔这么久再响一次。\n"
+            "小一点（100ms 左右）= 连成一片；大一点 = 一下一下地蹦。"
+        )
+        trig_row.addWidget(self.repeat_ms)
+        self.lbl_repeat_hint = QLabel("按住时每隔这么久再响一次")
+        self.lbl_repeat_hint.setObjectName("Hint")
+        self.lbl_repeat_hint.setWordWrap(True)
+        self.lbl_repeat_hint.setMaximumWidth(116)
+        trig_row.addWidget(self.lbl_repeat_hint)
+        trig_row.addStretch(1)
+        body.addLayout(trig_row)
+
+        # ---- 触发条件（v0.9）：无条件 / 先用解锁键开门 ----
+        cond_row = QHBoxLayout()
+        cond_row.setSpacing(4)
+        self.lbl_unlock = cl = QLabel("条件")
+        cl.setFixedWidth(52)
+        cl.setStyleSheet("color:#3f6074;font-size:12px;")
+        cond_row.addWidget(cl)
+        self.unlock_mode = QComboBox()
+        for mode in UNLOCK_MODES:
+            self.unlock_mode.addItem(UNLOCK_MODE_LABEL.get(mode, mode), mode)
+        self.unlock_mode.setToolTip(
+            "无条件：按了就能响。\n"
+            "条件解锁：先按一下「解锁键」，这个音效才能被触发。"
+        )
+        cond_row.addWidget(self.unlock_mode, 1)
+        self.unlock_key = KeyBox("", 96)
+        self.unlock_key.setToolTip(
+            "解锁键：按一下它，名下所有音效一起放开（各自算各自的时间和次数）。\n"
+            "重复按是刷新，不会叠加次数。"
+        )
+        cond_row.addWidget(self.unlock_key)
+        body.addLayout(cond_row)
+
+        self.unlock_limits = QWidget()
+        limits = QHBoxLayout(self.unlock_limits)
+        limits.setContentsMargins(0, 0, 0, 0)
+        limit_label = QLabel("解锁限制")
+        limit_label.setFixedWidth(52)
+        limit_label.setStyleSheet("color:#405477;font-size:12px;")
+        limits.addWidget(limit_label)
+        self.unlock_ms = QSpinBox()
+        self.unlock_ms.setRange(0, UNLOCK_MS_MAX)
+        self.unlock_ms.setSingleStep(500)
+        self.unlock_ms.setSuffix(" ms")
+        self.unlock_ms.setSpecialValueText("不限时")
+        # 96 会把 "10000 ms" 的后缀裁成 "10000 r"（数字框还有两个箭头占宽），
+        # 从次数框借 6px 过来正好，整行总宽不变
+        self.unlock_ms.setFixedWidth(106)
+        self.unlock_ms.setToolTip(
+            "解锁后多久之内可以触发。0 = 不限时（一直到次数用完）。\n"
+            "注意：时间到了只是「不能再触发新的」，正在响的声音会继续响完。"
+        )
+        limits.addWidget(self.unlock_ms)
+        self.unlock_count = QSpinBox()
+        self.unlock_count.setRange(0, UNLOCK_COUNT_MAX)
+        self.unlock_count.setSingleStep(1)
+        self.unlock_count.setSuffix(" 次")
+        self.unlock_count.setSpecialValueText("不限次")
+        self.unlock_count.setFixedWidth(84)
+        self.unlock_count.setToolTip(
+            "解锁一次能用几次。0 = 不限次。\n"
+            "长按连续触发整段按住也只算 1 次。"
+        )
+        limits.addWidget(self.unlock_count)
+        limits.addStretch(1)
+        body.addWidget(self.unlock_limits)
+
+        # ---- 条件停止（v0.9.0）：按一下立刻停掉，并重新上锁 ----
+        # 单独占一行："条件"那行已经排满（下拉 + 解锁键 + 时间 + 次数），
+        # 再往里塞一个按键框，最小窗口下会把下拉和数字框挤成一条缝。
+        stop_row = QHBoxLayout()
+        stop_row.setSpacing(4)
+        self.lbl_stop = sl = QLabel("停止")
+        sl.setFixedWidth(52)
+        sl.setStyleSheet("color:#3f6074;font-size:12px;")
+        stop_row.addWidget(sl)
+
+        # 停止键可以有好几个：都摆在同一个容器里，按哪个都算。
+        # 用容器而不是直接往行里塞，是为了加/删时不用动整行的布局。
+        self.stop_holder = QWidget()
+        self._stop_lay = QHBoxLayout(self.stop_holder)
+        self._stop_lay.setContentsMargins(0, 0, 0, 0)
+        self._stop_lay.setSpacing(4)
+        self._stop_boxes: list[KeyBox] = []
+        stop_row.addWidget(self.stop_holder)
+
+        self.btn_add_stop = QPushButton("＋")
+        self.btn_add_stop.setObjectName("KeyAdd")
+        self.btn_add_stop.setFixedSize(20, 20)
+        self.btn_add_stop.setCursor(Qt.PointingHandCursor)
+        self.btn_add_stop.setFocusPolicy(Qt.NoFocus)   # 别把焦点从按键框抢走
+        self.btn_add_stop.setToolTip(f"再加一个停止键（最多 {STOP_KEYS_MAX} 个）")
+        self.btn_add_stop.clicked.connect(self._on_add_stop)
+        stop_row.addWidget(self.btn_add_stop)
+
+        self.lbl_stop_hint = QLabel("按下停止")
+        self.lbl_stop_hint.setObjectName("Hint")
+        self.lbl_stop_hint.setWordWrap(False)
+        self.lbl_stop_hint.setFixedWidth(116)
+        self.lbl_stop_hint.setToolTip(
+            "只对开了「条件解锁」的音效有「重新上锁」这层意思；\n"
+            "无条件音效设了它也是「按一下就停」，一样有用。"
+        )
+        stop_row.addWidget(self.lbl_stop_hint)
+        stop_row.addStretch(1)
+        body.addLayout(stop_row)
+
+        # ---- 连击时是否打断上一声（v0.9.1）----
+        # 和「条件」无关：这是"同一个音效连着按"的时候，新的要不要把旧的掐掉。
+        # 默认不掐（叠加），勾上就变成"每按一次都从头来"。
+        cut_row = QHBoxLayout()
+        self.lbl_cut = cl = QLabel("打断")
+        cl.setFixedWidth(52)
+        cl.setStyleSheet("color:#3f6074;font-size:12px;")
+        cut_row.addWidget(cl)
+        self.chk_stop_prev = QCheckBox("连击时停掉上一次")
+        self.chk_stop_prev.setObjectName("GlobalChk")
+        self.chk_stop_prev.setToolTip(
+            "勾上之后：同一个音效还没放完就再按一次，会先把上一声掐掉再重新开始。\n"
+            "不勾（默认）：两声叠在一起响，适合笑声、喊声这种越叠越热闹的。\n"
+            "对快捷键、轮盘点选、长按连发都生效；只影响这一个格子。"
+        )
+        cut_row.addWidget(self.chk_stop_prev)
+        cut_row.addSpacing(8)
+        self.lbl_cut_hint = QLabel("不勾就叠着响")
+        self.lbl_cut_hint.setObjectName("Hint")
+        cut_row.addWidget(self.lbl_cut_hint)
+        cut_row.addStretch(1)
+        body.addLayout(cut_row)
+
+        lay.addWidget(self.body)
+        lay.addStretch(1)
+
+        # 控件改动即时写回配置
+        self.volume.valueChanged.connect(self._push)
+        self.pitch_mode.currentIndexChanged.connect(self._push)
+        self.pitch_step.currentIndexChanged.connect(self._push)
+        self.pitch_fixed.valueChanged.connect(self._push)
+        self.pitch_window.valueChanged.connect(self._push)
+        self.speed_mode.currentIndexChanged.connect(self._push)
+        self.speed_step.currentIndexChanged.connect(self._push)
+        self.hotkey.key_changed.connect(self._on_hotkey_changed)
+        self.chk_global.toggled.connect(self._on_global_toggled)
+        self.trigger_mode.currentIndexChanged.connect(self._on_trigger_changed)
+        self.repeat_ms.valueChanged.connect(self._push)
+        self.unlock_mode.currentIndexChanged.connect(self._on_unlock_changed)
+        self.unlock_key.key_changed.connect(lambda _v: self._push())
+        self.unlock_ms.valueChanged.connect(self._push)
+        self.unlock_count.valueChanged.connect(self._push)
+        self.chk_stop_prev.toggled.connect(self._push)
+        self.btn_play.clicked.connect(
+            lambda: self.current and self.preview_requested.emit(self.current)
+        )
+        self.btn_combo.clicked.connect(self._emit_edit_combo)
+
+        self.set_sound(None)
+
+    def set_sound(self, name: str | None) -> None:
+        """切换当前编辑的音效；None 表示没选中，控件置灰。
+
+        传进来的必须是**带扩展名的文件名**（和 sounds.json 的键一致），
+        界面标题上再显示去掉扩展名的样子。
+        """
+        self._loading = True
+        self.current = name
+        self._is_combo = bool(name) and is_combo_key(name)
+
+        if name is None:
+            self.title.set_full_text("未选中音效")
+            self.title.setStyleSheet("color:#537285;")
+            # 没选中时把触发相关控件复位，免得留着上一个音效的值骗人
+            self.trigger_mode.setCurrentIndex(0)
+            self.repeat_ms.setValue(200)
+            self.unlock_mode.setCurrentIndex(0)
+            self.unlock_key.set_key("")
+            self.unlock_ms.setValue(0)
+            self.unlock_count.setValue(0)
+            self._set_stop_keys([])
+            self.chk_global.setChecked(False)
+            self.chk_stop_prev.setChecked(False)
+        else:
+            self.title.set_full_text(
+                self.scfg.display_name(name) if self._is_combo else Path(name).stem
+            )
+            self.title.setStyleSheet("color:#102f46;")
+            st = self.scfg.setting(name)
+            self.volume.setValue(int(round(st.volume * 100)))
+            self.vol_val.setText(f"{self.volume.value()}%")
+            mi = self.pitch_mode.findData(st.pitch_mode)
+            self.pitch_mode.setCurrentIndex(max(0, mi))
+            si = self.pitch_step.findData(float(st.pitch_step))
+            if si < 0:
+                # 老配置里可能是 4、6 这种下拉里没有的幅度：就近选一个
+                vals = [self.pitch_step.itemData(k) for k in range(self.pitch_step.count())]
+                si = min(range(len(vals)), key=lambda k: abs(vals[k] - float(st.pitch_step)))
+            self.pitch_step.setCurrentIndex(max(0, si))
+            self.pitch_fixed.setValue(float(st.pitch_fixed))
+            self.pitch_window.setValue(int(st.pitch_window_ms))
+            mi = self.speed_mode.findData(st.speed_mode)
+            self.speed_mode.setCurrentIndex(max(0, mi))
+            si2 = self.speed_step.findData(float(st.speed_step))
+            if si2 < 0:
+                # 老配置里可能是 12%、25% 这类下拉里没有的幅度：就近选一个
+                vals = [self.speed_step.itemData(k) for k in range(self.speed_step.count())]
+                si2 = min(range(len(vals)), key=lambda k: abs(vals[k] - float(st.speed_step)))
+            self.speed_step.setCurrentIndex(max(0, si2))
+            self.hotkey.set_key(st.hotkey)
+            self.chk_global.setChecked(bool(getattr(st, "global_hotkey", False)))
+            self.chk_stop_prev.setChecked(bool(getattr(st, "stop_prev", False)))
+
+            # ---- 触发方式 / 触发条件 ----
+            ti = self.trigger_mode.findData(st.trigger_mode)
+            self.trigger_mode.setCurrentIndex(max(0, ti))
+            self.repeat_ms.setValue(int(getattr(st, "repeat_ms", 200)))
+            ui = self.unlock_mode.findData(st.unlock_mode)
+            self.unlock_mode.setCurrentIndex(max(0, ui))
+            self.unlock_key.set_key(getattr(st, "unlock_key", "") or "")
+            self.unlock_ms.setValue(int(getattr(st, "unlock_ms", 0)))
+            self.unlock_count.setValue(int(getattr(st, "unlock_count", 0)))
+            self._set_stop_keys(list(getattr(st, "stop_keys", []) or []))
+
+        for w in (self.volume, self.pitch_mode, self.pitch_step,
+                  self.pitch_fixed,
+                  self.speed_mode, self.speed_step,
+                  self.pitch_window, self.hotkey, self.btn_play,
+                  self.trigger_mode, self.repeat_ms,
+                  self.unlock_mode, self.unlock_key,
+                  self.unlock_ms, self.unlock_count,
+                  self.chk_global, self.chk_stop_prev):
+            w.setEnabled(name is not None)
+        # 停止键框是动态建的，逐个置灰（加号按钮在 _sync_stop_ui 里管）
+        self.stop_holder.setEnabled(name is not None)
+        self.btn_combo.setVisible(self._is_combo)
+        self._sync_pitch_enabled()
+        self._sync_trigger_ui()
+        self._sync_global_hint()
+        self._loading = False
+
+    def _sync_trigger_ui(self) -> None:
+        """按当前选择显示/藏起"用不上"的那几个格子。
+
+        长按连续触发才需要间隔；条件解锁才需要解锁键/时间/次数。
+        其余一律藏掉 —— 面板就这么点地方，留着灰框只会让人猜。
+        """
+        mode = str(self.trigger_mode.currentData() or "")
+        is_repeat = mode == TRIGGER_REPEAT
+        self.repeat_ms.setVisible(is_repeat)
+        self.lbl_repeat_hint.setVisible(is_repeat)
+
+        locked = str(self.unlock_mode.currentData() or "") == UNLOCK_KEY
+        self.unlock_key.setVisible(locked)
+        self.unlock_limits.setVisible(locked)
+        self.unlock_ms.setVisible(locked)
+        self.unlock_count.setVisible(locked)
+        # 选了"条件解锁"却没设键：等于没锁，直接在提示里说清楚，
+        # 免得用户以为设置坏了
+        if locked and self.current is not None and not self.unlock_key.key_name:
+            self.lbl_repeat_hint.setText("注意：还没设解锁键，现在等于无条件")
+            self.lbl_repeat_hint.setVisible(True)
+        elif is_repeat:
+            self.lbl_repeat_hint.setText("按住时每隔这么久再响一次")
+
+        # 停止键一直露着：无条件音效设了也照样有用（就是"按一下就停"），
+        # 只是说明得跟着变 —— 无条件没有"重新上锁"这回事，别乱许诺
+        self.lbl_stop_hint.setText(
+            "按一下立刻停掉，并重新上锁" if locked else "按一下立刻停掉这个音效"
+        )
+        self._sync_stop_ui()
+
+    # ---- 条件停止键（可以有好几个）----
+    def _set_stop_keys(self, keys) -> None:
+        """按配置把停止键框摆出来：有几个键就摆几个，最少留一个空框。
+
+        空框是给"还没设"的状态留的位置 —— 用户点进去直接按键就行，
+        不用先点加号。
+        """
+        vals = [str(k or "") for k in (keys or [])][:STOP_KEYS_MAX]
+        want = max(1, len(vals))
+        # 多了就拆，少了就补；按键框带自己的清除按钮，拆掉时要真的删掉
+        while len(self._stop_boxes) > want:
+            b = self._stop_boxes.pop()
+            self._stop_lay.removeWidget(b)
+            b.setParent(None)
+            b.deleteLater()
+        while len(self._stop_boxes) < want:
+            b = KeyBox("", 96)
+            b.setToolTip(
+                "条件停止键：按一下，这个音效立刻停（正在响的直接掐掉），\n"
+                "同时取消它的条件解锁 —— 想再触发得重新按解锁键。\n"
+                "不管声音是快捷键按出来的、轮盘点的，还是长按连发出来的，都会停。\n"
+                "可以设好几个，按哪个都算；空着 = 没有这个键。"
+            )
+            b.key_changed.connect(lambda _v: self._push())
+            self._stop_lay.addWidget(b)
+            self._stop_boxes.append(b)
+        for i, b in enumerate(self._stop_boxes):
+            b.set_key(vals[i] if i < len(vals) else "")
+
+    def _on_add_stop(self) -> None:
+        """加号：多摆一个空框。已经是最后一个了就不再动。"""
+        if len(self._stop_boxes) >= STOP_KEYS_MAX:
+            return
+        self._set_stop_keys([b.key_name for b in self._stop_boxes] + [""])
+        # 焦点直接放进新框，用户按一下键就绑上了
+        self._stop_boxes[-1].edit.setFocus()
+        self._sync_stop_ui()
+
+    def _sync_stop_ui(self) -> None:
+        """加号按钮和说明文字的显隐。
+
+        3 个按键框 + 说明文字在最小窗口下排不下，所以键多了就把说明让出来；
+        加满了（STOP_KEYS_MAX）就把加号藏掉，免得点了没反应。
+        """
+        n = len(self._stop_boxes)
+        self.btn_add_stop.setVisible(n < STOP_KEYS_MAX)
+        self.btn_add_stop.setEnabled(self.current is not None)
+        self.lbl_stop_hint.setVisible(n < 3)
+
+    def _on_trigger_changed(self) -> None:
+        self._sync_trigger_ui()
+        self._push()
+
+    def _on_unlock_changed(self) -> None:
+        self._sync_trigger_ui()
+        self._push()
+
+    def _sync_pitch_enabled(self) -> None:
+        """随机/固定变调都不看连击窗口：那一格换成一句说明。
+
+        但如果速度那条开着，窗口对速度仍然有用，所以不能藏。
+        """
+        if self._is_combo:
+            # 组合的每项变调/变速在编辑器里逐项设置，这里整排藏掉
+            for w in (self.lbl_pitch, self.pitch_mode, self.pitch_step,
+                      self.pitch_fixed, self.lbl_speed, self.speed_mode,
+                      self.speed_step, self.lbl_window, self.pitch_window,
+                      self.lbl_rand_hint, self.lbl_fixed_hint):
+                w.setVisible(False)
+            self.lbl_combo_hint.setVisible(self.current is not None)
+            # 组合的变调/变速不在这儿管，但"全局通用"照样要有：
+            # 组合的定义全盘共用 != 它的快捷键每套轮盘都认。
+            self.chk_global.setVisible(True)
+            return
+        # 普通音效：先把组合模式藏掉的那批"无条件放回来"，再按当前模式做减法。
+        # 隐藏是粘性的 —— 只要没显式 setVisible(True)，控件就永远不再出现，
+        # 所以这里必须逐个还原，不能只还原"可能要藏的那几个"。
+        self.lbl_combo_hint.setVisible(False)
+        self.chk_global.setVisible(True)
+        self.lbl_pitch.setVisible(True)
+        self.pitch_mode.setVisible(True)
+        self.lbl_speed.setVisible(True)
+        self.speed_mode.setVisible(True)
+        self.speed_step.setVisible(True)
+        mode = self.pitch_mode.currentData()
+        no_window = mode in (PITCH_RANDOM, PITCH_FIXED)
+        fixed = mode == PITCH_FIXED
+        self.pitch_step.setVisible(not fixed)
+        self.pitch_fixed.setVisible(fixed)
+        speed_on = self.speed_mode.currentData() != SPEED_NONE
+        hide_win = no_window and not speed_on
+        usable = self.current is not None and not hide_win
+        self.lbl_window.setVisible(not hide_win)
+        self.pitch_window.setVisible(not hide_win)
+        self.pitch_window.setEnabled(usable)
+        self.lbl_rand_hint.setVisible(bool(mode == PITCH_RANDOM and not speed_on
+                                           and self.current is not None))
+        self.lbl_fixed_hint.setVisible(bool(fixed and not speed_on
+                                            and self.current is not None))
+
+    def _on_hotkey_changed(self, _key: str = "") -> None:
+        self._sync_global_hint()
+        self._push()
+
+    def _on_global_toggled(self, _on: bool = False) -> None:
+        self._sync_global_hint()
+        self._push()
+
+    def _sync_global_hint(self) -> None:
+        """勾了「全局通用」却没绑键时，把"它暂时不生效"直接说出来。
+
+        不改复选框的文字（那一行已经排满，加字会挤），改成换提示，
+        鼠标悬停就能看到原因，免得用户以为功能没做好。
+        """
+        if self.chk_global.isChecked() and not self.hotkey.key_name:
+            self.chk_global.setToolTip(
+                "已经勾上了，但这个音效还没绑快捷键 ——\n"
+                "没有键可以按，这一项暂时不会生效。先在左边绑一个键。"
+            )
+        else:
+            self.chk_global.setToolTip(
+                "「全局通用」：勾上之后，这个快捷键不再跟着轮盘走，\n"
+                "切换到别的轮盘，按这个键照样能触发它。\n"
+                "不勾的时候只在它所在的这一套轮盘上生效（和以前一样）。"
+            )
+
+    def _emit_edit_combo(self) -> None:
+        if self.current and is_combo_key(self.current):
+            self.edit_combo_requested.emit(self.current[len(COMBO_PREFIX):])
+
+    def _push(self) -> None:
+        if self._loading or self.current is None:
+            return
+        st = self.scfg.setting(self.current)
+        st.volume = self.volume.value() / 100.0
+        # 触发方式和触发条件对普通音效和组合一视同仁
+        st.trigger_mode = str(self.trigger_mode.currentData() or "tap")
+        st.repeat_ms = int(self.repeat_ms.value())
+        st.unlock_mode = str(self.unlock_mode.currentData() or "none")
+        st.unlock_key = self.unlock_key.key_name
+        st.unlock_ms = int(self.unlock_ms.value())
+        st.unlock_count = int(self.unlock_count.value())
+        st.stop_keys = [b.key_name for b in self._stop_boxes if b.key_name]
+        st.stop_prev = bool(self.chk_stop_prev.isChecked())
+        if self._is_combo:
+            # 组合没有"整体变调/速度"这回事，逐项参数归编辑器管
+            st.hotkey = self.hotkey.key_name
+            st.global_hotkey = bool(self.chk_global.isChecked())
+            self.vol_val.setText(f"{self.volume.value()}%")
+            self.setting_changed.emit(self.current)
+            return
+        st.pitch_mode = str(self.pitch_mode.currentData() or "none")
+        st.pitch_step = float(self.pitch_step.currentData() or 1.0)
+        st.pitch_fixed = round(float(self.pitch_fixed.value()), 1)
+        st.pitch_window_ms = int(self.pitch_window.value())
+        st.speed_mode = str(self.speed_mode.currentData() or "none")
+        st.speed_step = float(self.speed_step.currentData() or 0.10)
+        st.hotkey = self.hotkey.key_name
+        st.global_hotkey = bool(self.chk_global.isChecked())
+        self.vol_val.setText(f"{self.volume.value()}%")
+        self._sync_pitch_enabled()
+        self.setting_changed.emit(self.current)
+
+
+class _FirstRunTip(QWidget):
+    """首次启动浮在设置窗口上的一张提示卡：告诉用户去翻「常见问题」。
+
+    做成窗口内的覆盖层，而不是独立对话框：
+    它跟着主窗口一起移动/关闭，不需要额外的窗口管理，也不会变成孤儿窗口。
+    """
+
+    open_faq = Signal()
+    dismissed = Signal()
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("TipMask")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(28, 28, 28, 28)
+        v.addStretch(1)
+
+        h = QHBoxLayout()
+        h.addStretch(1)
+
+        card = QFrame()
+        card.setObjectName("TipCard")
+        card.setFixedWidth(420)
+        self.card = card
+        cv = QVBoxLayout(card)
+        cv.setContentsMargins(22, 18, 22, 16)
+        cv.setSpacing(10)
+
+        title = QLabel("第一次用？")
+        title.setObjectName("TipTitle")
+        cv.addWidget(title)
+
+        body = _WrapLabel(
+            "把音效拖进轮盘，或点选已有扇区调整参数。游戏里长按呼出键，移动鼠标并松手即可播放。"
+            "想把音效发到语音聊天时，在顶部打开「语音输出」。"
+        )
+        body.setObjectName("TipText")
+        cv.addWidget(body)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addStretch(1)
+
+        self.btn_later = QPushButton("知道了")
+        self.btn_later.setCursor(Qt.PointingHandCursor)
+        self.btn_later.clicked.connect(self._later)
+        row.addWidget(self.btn_later)
+
+        self.btn_go = QPushButton("去看看")
+        self.btn_go.setObjectName("Primary")
+        self.btn_go.setCursor(Qt.PointingHandCursor)
+        self.btn_go.clicked.connect(self._go)
+        row.addWidget(self.btn_go)
+        cv.addLayout(row)
+
+        h.addWidget(card)
+        h.addStretch(1)
+        v.addLayout(h)
+        v.addStretch(1)
+
+    def _later(self) -> None:
+        self.dismissed.emit()
+
+    def _go(self) -> None:
+        self.open_faq.emit()
+
+    def mousePressEvent(self, e) -> None:  # noqa: N802
+        # 点卡片外面任意处也当作「我知道了」，省得用户找不到关掉的按钮；
+        # 点卡片本身（文字、空白）不算，否则想选中文字就顺手关掉了
+        pos = e.position().toPoint()
+        if self.card.rect().contains(self.card.mapFrom(self, pos)):
+            e.accept()
+            return
+        e.accept()
+        self.dismissed.emit()
+
+
+class SettingsWindow(QWidget):
+    """配置主窗口。"""
+
+    guide_requested = Signal()
+    update_requested = Signal()
+    closed = Signal()
+    changed = Signal()             # 轮盘内容/顺序变了，主程序要重新解码
+    params_changed = Signal()      # 只是参数变了（音量/变调/按键），不用重解码
+    audio_changed = Signal()       # 麦克风那套参数变了，主程序要重建音频链路
+    preview_requested = Signal(str)  # 试听某个音效
+    wheel_switch_requested = Signal(str)  # 要切到另一套轮盘（wid），由主程序执行
+
+    def __init__(self, cfg: dict, scfg, bank: sr.SoundBank, engine=None) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.scfg = scfg
+        self.bank = bank
+        self.engine = engine
+        self._use_motion = False
+        self._closing = False
+        self._window_animation = None
+
+        self.setWindowFlags(
+            Qt.Window | Qt.FramelessWindowHint | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowTitle(sr.APP_NAME)
+        self.setMinimumSize(760, 500)
+        self.setWindowIcon(sr.make_icon())
+        self.setMouseTracking(True)
+        # 手动缩放兜底状态（系统不接手时用，见 begin_resize）
+        self._rs_active = False
+        self._rs_edges = Qt.Edges()
+        self._rs_global = QPoint()
+        self._rs_geo: QRect | None = None
+        self._restore_geometry()
+        self.setStyleSheet(build_qss())
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        self.root = QWidget()
+        self.root.setObjectName("Root")
+        # 窗口边框那几像素是 root 的空白区（标签页和外边有 20px 内边距），
+        # 不开 tracking 的话鼠标移过去收不到事件，光标不会变成缩放箭头
+        self.root.setMouseTracking(True)
+        outer.addWidget(self.root)
+
+        v = QVBoxLayout(self.root)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        self.titlebar = TitleBar(self)
+        self.titlebar.btn_min.clicked.connect(self.showMinimized)
+        self.titlebar.btn_close.clicked.connect(self.close)
+        v.addWidget(self.titlebar)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(1, 0, 1, 1)
+        body.setSpacing(0)
+        v.addLayout(body, 1)
+
+        work = QWidget()
+        workspace = QVBoxLayout(work)
+        workspace.setContentsMargins(20, 13, 20, 16)
+        workspace.setSpacing(13)
+        body.addWidget(work, 1)
+
+        bar = QFrame()
+        bar.setObjectName("Navigation")
+        bar_layout = QHBoxLayout(bar)
+        bar_layout.setContentsMargins(5, 4, 5, 4)
+        bar_layout.setSpacing(3)
+        workspace.addWidget(bar)
+
+        heading = QHBoxLayout()
+        self.page_title = QLabel()
+        self.page_title.setObjectName("PageTitle")
+        heading.addWidget(self.page_title)
+        heading.addStretch(1)
+        self.key_hint = QLabel()
+        self.key_hint.setObjectName("ShortcutHint")
+        heading.addWidget(self.key_hint)
+        workspace.addLayout(heading)
+
+        self.work_scroll = QScrollArea()
+        self.work_scroll.setWidgetResizable(True)
+        self.work_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.content_host = QWidget()
+        self.content_layout = QHBoxLayout(self.content_host)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(14)
+        self.work_scroll.setWidget(self.content_host)
+        workspace.addWidget(self.work_scroll, 1)
+
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.tabBar().hide()
+        self.page_lib = LibraryPage(bank, scfg)
+        self.page_lib.slot_removed.connect(self._on_slot_removed)
+        self.page_lib.preview_requested.connect(self.preview_requested.emit)
+        self.page_lib.combo_new.connect(self._on_combo_new)
+        self.page_lib.combo_edit.connect(self._open_combo_editor)
+        self.page_lib.combo_delete.connect(self._on_combo_delete)
+        self.page_key = HotkeyPage(cfg, bank, scfg)
+        self.page_wheel = WheelPage(cfg, scfg)
+        self.page_mic = MicPage(cfg, engine)
+        self.page_help = HelpPage()
+        self.page_help.guide_requested.connect(self.guide_requested.emit)
+        self.page_help.update_requested.connect(self.update_requested.emit)
+        self.tabs.addTab(self.page_lib, "音效库")
+        self.tabs.addTab(self.page_key, "快捷键")
+        self.tabs.addTab(self.page_wheel, "轮盘")
+        self.tabs.addTab(self.page_mic, "语音输出")
+        self.tabs.addTab(self.page_help, "说明")
+        self.navigation = QButtonGroup(self)
+        self.navigation.setExclusive(True)
+        for index, (text, symbol) in enumerate((
+            ("音效工作台", "library"),
+            ("快捷键", "keys"),
+            ("轮盘设置", "wheel"),
+            ("语音输出", "voice"),
+            ("使用说明", "help"),
+        )):
+            button = QPushButton(text)
+            button.setObjectName("NavItem")
+            button.setIcon(_navigation_icon(symbol, on_dark=False))
+            button.setIconSize(QSize(17, 17))
+            button.setCheckable(True)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            button.setContextMenuPolicy(Qt.CustomContextMenu)
+            button.customContextMenuRequested.connect(
+                lambda pos, page=index, item=button: self._page_menu(page, item.mapToGlobal(pos))
+            )
+            self.navigation.addButton(button, index)
+            bar_layout.addWidget(button)
+        self.navigation.idClicked.connect(self.tabs.setCurrentIndex)
+        bar_layout.addStretch(1)
+        version = QLabel(sr.APP_VERSION)
+        version.setObjectName("AppVersion")
+        bar_layout.addWidget(version)
+        self.content_layout.addWidget(self.tabs, 1)
+
+        self.deck = QScrollArea()
+        self.deck.setWidgetResizable(True)
+        self.deck.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 4, 0)
+        rl.setSpacing(14)
+        self.deck.setWidget(right)
+        self.content_layout.addWidget(self.deck)
+
+        self.wheel_holder = QFrame()
+        self.wheel_holder.setObjectName("WheelStage")
+        wh = QVBoxLayout(self.wheel_holder)
+        wh.setContentsMargins(17, 15, 17, 14)
+        wh.setSpacing(8)
+
+        cap = QHBoxLayout()
+        cap_title = QLabel("轮盘预览")
+        cap_title.setObjectName("SectionLabel")
+        cap.addWidget(cap_title)
+        cap.addStretch(1)
+        self.lbl_count = QLabel(f"{len(bank)} 个槽位")
+        self.lbl_count.setObjectName("Hint")
+        cap.addWidget(self.lbl_count)
+        wh.addLayout(cap)
+
+        self.preview_cfg = dict(cfg)
+        # 预览框大小跟着「直径」走（180 对应 172 基准，和以前一样），
+        # 之前固定写死 172，导致直径调到 215 了预览还是老尺寸，看着偏小
+        self.preview_cfg["wheel_radius"] = preview_radius_of(cfg)
+        self.preview = WheelPreview(self.preview_cfg, bank)
+        self.preview.bank = bank
+        self.preview.selected = 0 if len(bank) else None
+        self.preview.accent_rgb = (scfg.wheel_color() or None) if scfg is not None else None
+        self.preview.lib_dropped.connect(self._on_lib_dropped)
+        self.preview.slot_dropped.connect(self._on_slot_dropped)
+        self.preview.slot_clicked.connect(self._on_slot_clicked)
+        # 音效库一抓起东西就点亮预览中心，拖完熄灯 —— 不依赖鼠标进没进轮盘
+        self.page_lib.drag_began.connect(self.preview.begin_lib_drag)
+        self.page_lib.drag_ended.connect(self.preview.end_lib_drag)
+        wh.addWidget(self.preview, 0, Qt.AlignCenter)
+        self.stage_hint = QLabel("拖入音效，或点击扇区编辑")
+        self.stage_hint.setObjectName("StageHint")
+        self.stage_hint.setAlignment(Qt.AlignCenter)
+        wh.addWidget(self.stage_hint)
+        rl.addWidget(self.wheel_holder)
+
+
+        self.page_wheel.changed.connect(self._on_wheel_changed)
+        self.page_wheel.palette_changed.connect(self._on_palette)
+        self.page_wheel.wheel_color_changed.connect(self._on_wheel_color)
+        self.page_wheel.wheel_switch.connect(self.wheel_switch_requested.emit)
+        self.page_key.changed.connect(self._on_cfg_changed)
+        self.page_mic.changed.connect(self._on_audio_changed)
+
+        self.detail = SlotDetail(scfg)
+        self.detail.setting_changed.connect(self._on_setting_changed)
+        self.detail.preview_requested.connect(self.preview_requested.emit)
+        self.detail.edit_combo_requested.connect(self._open_combo_editor)
+        sel = self.preview.selected
+        self.detail.set_sound(bank.full_at(sel) if sel is not None else None)
+        rl.addWidget(self.detail)
+        rl.addStretch(1)
+
+        if engine is not None:
+            strip = QFrame()
+            strip.setObjectName("Transport")
+            controls = QHBoxLayout(strip)
+            controls.setContentsMargins(12, 6, 8, 6)
+            self.transport_status = _ElideLabel("播放就绪")
+            self.transport_status.setObjectName("TransportStatus")
+            controls.addWidget(self.transport_status, 1)
+            self.transport_play = QPushButton("播放所选")
+            self.transport_play.clicked.connect(self.detail.btn_play.click)
+            controls.addWidget(self.transport_play)
+            self.transport_stop = QPushButton("停止播放")
+            self.transport_stop.clicked.connect(engine.stop_all)
+            controls.addWidget(self.transport_stop)
+            workspace.addWidget(strip)
+            transport_watch = QTimer(self, interval=125)
+            transport_watch.timeout.connect(self._refresh_transport)
+            transport_watch.start()
+            self._refresh_transport()
+
+        self._tip: _FirstRunTip | None = None
+        self.tabs.currentChanged.connect(self._show_page)
+        try:
+            initial = int(cfg.get("startup_page", 0))
+        except (TypeError, ValueError):
+            initial = 0
+        self.tabs.setCurrentIndex(max(0, min(self.tabs.count() - 1, initial)))
+        self._show_page(self.tabs.currentIndex())
+        self.navigation.button(self.tabs.currentIndex()).setFocus()
+
+    def _refresh_transport(self) -> None:
+        playing = self.engine.playing
+        self.transport_status.set_full_text("正在播放" if playing else "播放就绪")
+        self.transport_play.setEnabled(bool(self.detail.current))
+        self.transport_stop.setEnabled(playing)
+
+    def _page_menu(self, index: int, position: QPoint) -> None:
+        button = self.navigation.button(index)
+        menu = branded_menu(self, button.text())
+        open_page = menu.addAction("打开此页")
+        start_page = menu.addAction("设为启动页")
+        start_page.setCheckable(True)
+        start_page.setChecked(self.cfg.get("startup_page", 0) == index)
+        menu.addSeparator()
+        title, command = (
+            ("打开音效文件夹", self.page_lib.btn_folder.click),
+            ("定位轮盘快捷键", self.page_key.key_wheel.edit.setFocus),
+            ("定位轮盘库", self.page_wheel.wheel_list.setFocus),
+            ("重新检测音频设备", self.page_mic.btn_refresh.click),
+            ("查看常见问题", self.page_help.focus_faq),
+        )[index]
+        related = menu.addAction(title)
+        chosen = menu.exec(position)
+        if chosen is open_page:
+            self.tabs.setCurrentIndex(index)
+        elif chosen is start_page:
+            self.cfg["startup_page"] = index
+            self.cfg["open_settings_on_start"] = True
+            self.page_key.chk_autosettings.setChecked(True)
+            sr.save_config(self.cfg)
+        elif chosen is related:
+            self.tabs.setCurrentIndex(index)
+            command()
+        menu.deleteLater()
+
+    def _show_page(self, index: int) -> None:
+        button = self.navigation.button(index)
+        button.setChecked(True)
+        self.page_title.setText(button.text())
+        self.work_scroll.verticalScrollBar().setValue(0)
+        self.deck.setVisible(index in (0, 2))
+        self.detail.setVisible(index == 0)
+        self.stage_hint.setVisible(index == 0)
+        self.deck.verticalScrollBar().setValue(0)
+        if index == 0:
+            self.page_lib.refresh()
+        self.key_hint.setVisible(index in (0, 2))
+        self._refresh_workspace()
+        self._fit_deck()
+        if self.isVisible():
+            reveal(self.content_host, self._animated())
+
+    def enable_window_motion(self):
+        self._use_motion = motion_allowed()
+
+    def _animated(self):
+        return self._use_motion and bool(self.cfg.get("animations", True))
+
+    def _fade_window(self, start, end, on_done=None):
+        if self._window_animation is not None:
+            self._window_animation.stop()
+            self._window_animation.deleteLater()
+        fade = QPropertyAnimation(self, b"windowOpacity", self)
+        fade.setDuration(165)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        fade.setStartValue(start)
+        fade.setEndValue(end)
+        if on_done is not None:
+            fade.finished.connect(on_done)
+        self._window_animation = fade
+        fade.start()
+
+    def _refresh_workspace(self) -> None:
+        hotkey = key_label(str(self.cfg.get("hotkey") or "y"))
+        self.key_hint.setText(f"长按  {hotkey}  呼出轮盘")
+
+    # ---- 首次启动引导 ----
+    def _maybe_show_help_tip(self) -> None:
+        """第一次打开设置窗口时，浮一张卡告诉用户去翻常见问题。看过就不再弹。"""
+        if self._tip is not None or bool(self.cfg.get("help_tip_shown", False)) or self._use_motion:
+            return
+        # 等窗口先画出来再浮上来，避免开窗口的瞬间跟界面一起闪
+        QTimer.singleShot(400, self._show_help_tip)
+
+    def _show_help_tip(self) -> None:
+        if self._tip is not None or not self.isVisible():
+            return
+        tip = _FirstRunTip(self)
+        tip.setGeometry(self.root.geometry())
+        tip.open_faq.connect(self._on_tip_go)
+        tip.dismissed.connect(self._close_help_tip)
+        tip.show()
+        tip.raise_()
+        self._tip = tip
+
+    def _on_tip_go(self) -> None:
+        """「去看看」：关掉卡片，直接把人送到常见问题那一节。"""
+        self._close_help_tip()
+        self.tabs.setCurrentWidget(self.page_help)
+        self.page_help.focus_faq()
+
+    def _close_help_tip(self) -> None:
+        tip, self._tip = self._tip, None
+        if tip is not None:
+            tip.hide()
+            tip.deleteLater()
+        if not bool(self.cfg.get("help_tip_shown", False)):
+            self.cfg["help_tip_shown"] = True
+            try:
+                sr.save_config(self.cfg)
+            except Exception as e:      # 存不下也不该拦住用户用软件
+                print(f"[cfg] 引导标记没存下：{e}")
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        super().resizeEvent(e)
+        if self._tip is not None:
+            self._tip.setGeometry(self.root.geometry())
+        self._fit_deck()
+        self._queue_geom_save()
+
+    def moveEvent(self, e) -> None:  # noqa: N802
+        super().moveEvent(e)
+        self._queue_geom_save()
+
+    # ---- 窗口尺寸（v0.9.2：可缩放 + 记住） ----
+    _GEOM_SAVE_MS = 700
+    _EDGE_POLL_MS = 40      # 多久看一眼鼠标在不在窗口边（见 _poll_edge_cursor）
+
+    def _fit_deck(self) -> None:
+        if not hasattr(self, "preview"):
+            return
+        page = self.tabs.currentIndex()
+        has_deck = page in (0, 2)
+        compact = has_deck and (self.width() < 930 or self.height() > self.width())
+        self.content_layout.setDirection(QBoxLayout.TopToBottom if compact else QBoxLayout.LeftToRight)
+        self.tabs.setMinimumHeight(330 if compact else 0)
+        self.deck.setMinimumHeight((510 if page == 0 else 350) if compact else 0)
+        self.deck.setMinimumWidth(0)
+        self.deck.setMaximumWidth(16777215)
+
+        width = max(286, self.width() - 52)
+        if not compact:
+            width = max(464, min(690, int((self.width() - 54) * 0.48)))
+            if page == 2:
+                settings_minimum = self.page_wheel.settings_scroll.widget().minimumSizeHint().width()
+                width = min(width, max(255, self.width() - 74 - settings_minimum))
+            self.deck.setFixedWidth(width)
+        requested = preview_radius_of(self.cfg)
+        reserved = 295 if page == 2 else 649
+        available = 132 if compact else max(105, (self.height() - reserved) // 2)
+        radius = min(requested, available, (width - 88) // 2)
+        self.preview_cfg["wheel_radius"] = radius
+        side = radius * 2 + PREVIEW_PAD
+        self.preview.setFixedSize(side, side)
+        self.preview.update()
+
+    def _queue_geom_save(self) -> None:
+        """拖动缩放时别每帧写盘，停手 0.7 秒再存一次。"""
+        if getattr(self, "_geom_timer", None) is None:
+            self._geom_timer = QTimer(self)
+            self._geom_timer.setSingleShot(True)
+            self._geom_timer.setInterval(self._GEOM_SAVE_MS)
+            self._geom_timer.timeout.connect(self._save_geometry)
+        self._geom_timer.start()
+
+    def _save_geometry(self) -> None:
+        if self.isMinimized() or self.isMaximized() or not self.isVisible():
+            return
+        g = self.geometry()
+        self.cfg["settings_geom"] = [g.x(), g.y(), g.width(), g.height()]
+        try:
+            sr.save_config(self.cfg)
+        except Exception:
+            pass
+
+    def _restore_geometry(self) -> None:
+        """还原上次的窗口大小/位置；没存过或存的位置已经不在屏幕上就用默认值。"""
+        from PySide6.QtGui import QGuiApplication
+
+        geo = self.cfg.get("settings_geom")
+        try:
+            x, y, w, h = (int(value) for value in geo)
+            screen = QGuiApplication.screenAt(QPoint(x + w // 2, y + h // 2))
+        except (TypeError, ValueError):
+            x = y = None
+            w, h = 1220, 880
+            screen = None
+        screen = screen or QGuiApplication.primaryScreen()
+        w = max(w, self.minimumWidth())
+        h = max(h, self.minimumHeight())
+        if screen is None:
+            self.resize(w, h)
+            return
+
+        area = screen.availableGeometry()
+        w = min(w, area.width())
+        h = min(h, area.height())
+        if x is None or y is None:
+            x, y = area.center().x() - w // 2, area.center().y() - h // 2
+        else:
+            x = min(max(x, area.x()), area.right() + 1 - w)
+            y = min(max(y, area.y()), area.bottom() + 1 - h)
+        self.setGeometry(x, y, w, h)
+
+    # ---- 缩放命中：全部走 Qt 层 ----
+    # 曾经试过让窗口接 WM_NCHITTEST 回缩放区域码（指望系统自己当边框）：
+    # 系统一旦把边缘算成"非客户区"，Qt 就不再产生普通鼠标按下事件，
+    # startSystemResize 那条路永远走不到，表现就是"光标不变、按下去也不动"。
+    # 现在整个窗口都是客户区，缩放和光标全自己管，不依赖系统 hit-test。
+
+    def _edges_at(self, pos):
+        """窗口内坐标 -> 缩放边缘；不在边上返回空。"""
+        if self.isMaximized() or self.isFullScreen():
+            return Qt.Edges()
+        b = _RESIZE_BORDER
+        w, h = self.width(), self.height()
+        x, y = pos.x(), pos.y()
+        edges = Qt.Edges()
+        if x <= b:
+            edges |= Qt.LeftEdge
+        elif x >= w - b:
+            edges |= Qt.RightEdge
+        if y <= b:
+            edges |= Qt.TopEdge
+        elif y >= h - b:
+            edges |= Qt.BottomEdge
+        return edges
+
+    def start_resize(self, edges) -> bool:
+        """请系统接管缩放（发 SC_SIZE），起来了返回 True。
+
+        系统缩放最顺滑：跟随 DPI、贴边吸附、松手才落定，都是原生行为。
+        现在整个窗口都是客户区，Qt 的鼠标按下事件照常送到，这一脚补得上。
+        """
+        if not edges:
+            return False
+        wh = self.windowHandle()
+        if wh is None:
+            return False
+        try:
+            return bool(wh.startSystemResize(edges))
+        except Exception:
+            return False
+
+    def begin_resize(self, edges, global_pos) -> bool:
+        """按下边上了：先请系统接管，系统不接就自己算。
+
+        两条路都返回 True（表示"这一下已经处理掉了，别再拿去拖窗口"）。
+        自己算那条是兜底 —— 系统缩放最顺滑（有原生吸附/DPI 处理），
+        但不该出现"某些机器上就是拖不动"这种死路。
+        """
+        if not edges:
+            return False
+        if self.start_resize(edges):
+            return True
+        self._rs_edges = edges
+        self._rs_global = global_pos
+        self._rs_geo = QRect(self.geometry())
+        self._rs_active = True
+        return True
+
+    def _apply_manual_resize(self, global_pos) -> None:
+        if not self._rs_active or self._rs_geo is None:
+            return
+        dx = global_pos.x() - self._rs_global.x()
+        dy = global_pos.y() - self._rs_global.y()
+        g = QRect(self._rs_geo)
+        minw = max(1, self.minimumWidth())
+        minh = max(1, self.minimumHeight())
+        if self._rs_edges & Qt.LeftEdge:
+            # 左边界最多往右推到「右边界 - 最小宽度」（再往右窗口就太窄了）；
+            # 往左拖是放大，没有上限
+            g.setLeft(min(g.left() + dx, g.right() - minw + 1))
+        if self._rs_edges & Qt.RightEdge:
+            g.setRight(max(g.right() + dx, g.left() + minw - 1))
+        if self._rs_edges & Qt.TopEdge:
+            g.setTop(min(g.top() + dy, g.bottom() - minh + 1))
+        if self._rs_edges & Qt.BottomEdge:
+            g.setBottom(max(g.bottom() + dy, g.top() + minh - 1))
+        self.setGeometry(g)
+
+    def mousePressEvent(self, e) -> None:  # noqa: N802
+        if e.button() == Qt.LeftButton:
+            edges = self._edges_at(e.position().toPoint())
+            if edges and self.begin_resize(edges, e.globalPosition().toPoint()):
+                e.accept()
+                return
+        super().mousePressEvent(e)
+
+    def _set_edge_cursor(self, edges) -> None:
+        """按当前贴着哪条边换光标；每帧都设会一直触发属性变更，所以只在变时动。"""
+        cur = _cursor_for_edges(edges)
+        if cur != getattr(self, "_resize_cursor", "unset"):
+            self._resize_cursor = cur
+            if cur is None:
+                self.unsetCursor()
+            else:
+                self.setCursor(cur)
+
+    def _edge_watch_start(self) -> None:
+        if getattr(self, "_edge_timer", None) is None:
+            self._edge_timer = QTimer(self)
+            self._edge_timer.setInterval(self._EDGE_POLL_MS)
+            self._edge_timer.timeout.connect(self._poll_edge_cursor)
+        self._edge_timer.start()
+
+    def _poll_edge_cursor(self) -> None:
+        """定时看一眼鼠标在不在窗口边。
+
+        为什么不靠鼠标事件：鼠标"跳"到边上时（快速移动、从别的窗口直接移过来）
+        系统只发 Enter 不发 Move，靠事件驱动必然漏掉，光标就不变。
+        40ms 看一眼的开销可以忽略，胜在绝不会漏。
+        """
+        if self._rs_active or not self.isVisible():
+            return
+        try:
+            pt = ctypes.wintypes.POINT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+            under = ctypes.windll.user32.WindowFromPoint(pt)
+            hwnd = int(self.winId())
+            inside = int(under or 0) == hwnd or bool(
+                ctypes.windll.user32.IsChild(
+                    ctypes.wintypes.HWND(hwnd), ctypes.wintypes.HWND(under)
+                )
+            )
+        except Exception:
+            return
+        if not inside:
+            self._set_edge_cursor(Qt.Edges())
+            return
+        self._set_edge_cursor(self._edges_at(self.mapFromGlobal(QCursor.pos())))
+
+    def mouseMoveEvent(self, e) -> None:  # noqa: N802
+        if self._rs_active and e.buttons() & Qt.LeftButton:
+            self._apply_manual_resize(e.globalPosition().toPoint())
+            return
+        self._set_edge_cursor(self._edges_at(e.position().toPoint()))
+        super().mouseMoveEvent(e)
+
+    def hideEvent(self, e) -> None:  # noqa: N802
+        if getattr(self, "_edge_timer", None) is not None:
+            self._edge_timer.stop()
+        super().hideEvent(e)
+
+    def mouseReleaseEvent(self, e) -> None:  # noqa: N802
+        if self._rs_active:
+            self._rs_active = False
+            self._rs_geo = None
+            self._queue_geom_save()
+        super().mouseReleaseEvent(e)
+
+    def leaveEvent(self, e) -> None:  # noqa: N802
+        self._resize_cursor = None
+        self.unsetCursor()
+        super().leaveEvent(e)
+
+    # ---- 拖放与增删 ----
+    def _apply(self) -> None:
+        """改动落实：存盘、按新顺序重排槽位、刷新界面、通知主程序。"""
+        self.scfg.save()
+        self.bank.reload()
+        self._refresh_all()
+
+    def _refresh_all(self) -> None:
+        self.preview.bank = self.bank
+        self.preview.update()
+        n = len(self.bank)
+        self.lbl_count.setText(f"{n} 个槽位")
+        if n == 0:
+            self.preview.selected = None
+            self.detail.set_sound(None)
+        else:
+            sel = self.preview.selected
+            if sel is None or sel >= n:
+                sel = n - 1
+                self.preview.selected = sel
+            self.detail.set_sound(self.bank.full_at(sel))
+        self.page_lib.refresh()
+        self.changed.emit()
+
+    def _on_lib_dropped(self, name: str, sid: int) -> None:
+        """从音效库拖到轮盘：丢在中心 = 追加，丢在格子上 = 放进/替换那一格。"""
+        if sid == ADD_TO_END:
+            ok = self.scfg.add(name)
+        else:
+            ok = self.scfg.put_at_slot(sid, name)
+        if not ok:
+            return
+        self._apply()
+        # 落位之后 order 可能重排，用"名字 -> 新下标"重新定位选中项
+        if self.scfg.is_on_wheel(name):
+            self.preview.selected = self.scfg.order.index(self.scfg.canon(name))
+            self.preview.update()
+            self.detail.set_sound(self.bank.full_at(self.preview.selected))
+
+    def _on_slot_dropped(self, src: int, dst: int) -> None:
+        """轮盘内部拖动：两个槽位互换（外圈可以换成空格子）。"""
+        if src == dst:
+            return
+        if self.scfg.swap_slots(src, dst):
+            self._apply()
+
+    # ---- 组合音效 ----
+    def _on_combo_new(self) -> None:
+        """新建一个空组合并立刻打开编辑器（新建却看不到东西最让人迷惑）。"""
+        cdef = self.scfg.new_combo()
+        self.scfg.save()
+        self._apply()
+        self._open_combo_editor(cdef.cid)
+
+    def _on_combo_delete(self, cid: str) -> None:
+        cdef = self.scfg.combos.get(cid)
+        if cdef is None:
+            return
+        ret = QMessageBox.question(
+            self, "删除组合",
+            f"确定删除组合「{cdef.name}」吗？\n"
+            "它只是从轮盘上撤下来，成员音效文件不会被删。",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if ret != QMessageBox.Yes:
+            return
+        self.scfg.delete_combo(cid)
+        self.scfg.save()
+        self._apply()
+
+    def _open_combo_editor(self, cid: str) -> None:
+        cdef = self.scfg.combos.get(cid)
+        if cdef is None:
+            return
+        dlg = ComboEditorDialog(self.scfg, cdef, self.engine, self, self.cfg)
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        # 编辑期间改了成员/参数：轮盘名字、槽位详情、引擎解码都得跟着刷新
+        dlg.changed.connect(self._on_combo_changed)
+        # 关掉编辑器就把这条组合预渲染进缓存，下次按键零等待
+        dlg.finished.connect(lambda _r, c=cdef: self._warm_combo(c))
+        dlg.show()
+
+    def _warm_combo(self, cdef) -> None:
+        if self.engine is None:
+            return
+        try:
+            self.engine.warm_combo(cdef)
+        except Exception:
+            pass
+
+    def _on_combo_changed(self) -> None:
+        """组合被改动：攒一小会儿再刷新，别每敲一下就把整盘重来一遍。
+
+        以前这里每次改动都会走到"重新解码全部音效"，编辑时拖一下数字
+        就要等一次全量解码，手感很糟；而且音频参数是播放时实时读的，
+        根本没有重新解码的必要。
+        """
+        if getattr(self, "_combo_timer", None) is None:
+            self._combo_timer = QTimer(self)
+            self._combo_timer.setSingleShot(True)
+            self._combo_timer.setInterval(150)
+            self._combo_timer.timeout.connect(self._refresh_combo_now)
+        self._combo_timer.start()
+        # 只重绑快捷键（组合可能刚设了专属热键），不重新解码音频
+        self.params_changed.emit()
+
+    def _refresh_combo_now(self) -> None:
+        self.bank.reload()
+        self.preview.bank = self.bank
+        sel = self.preview.selected
+        if sel is not None:
+            self.detail.set_sound(self.bank.full_at(sel))
+        self.preview.update()
+        self.page_lib.refresh()
+
+    def _on_slot_removed(self, sid: int) -> None:
+        """把轮盘格子拖回音效库 = 从轮盘下盘。
+
+        传进来的是**槽位号**（0~7 内圈 / 8~19 外圈位置），不是音效下标。
+        内圈里两者数值恰好相等，所以以前只在第 0 格上试是看不出问题的；
+        外圈槽位号是 8~19，直接拿去当 order 下标会全部越界被挡掉，
+        表现就是"外圈的音效怎么拖都取消不掉"。必须先换算。
+        """
+        if self.bank is None:
+            return
+        idx = sr.index_of_slot(sid, len(self.bank), sr.outer_index_map_of(self.bank))
+        if idx is None or not (0 <= idx < len(self.scfg.order)):
+            return
+        self.scfg.remove(self.scfg.order[idx])
+        self._apply()
+
+    def _on_slot_clicked(self, idx: int) -> None:
+        self.preview.selected = idx
+        self.preview.update()
+        self.detail.set_sound(self.bank.full_at(idx))
+
+    def _on_setting_changed(self, _name: str) -> None:
+        # 只存盘 + 重绑快捷键。参数是播放时实时读的，没必要重新解码音频，
+        # 否则拖一下音量滑块就会把整盘音效解码几十遍，界面直接卡住。
+        self.scfg.save()
+        self.page_key.refresh_conflicts()
+        self.params_changed.emit()
+
+    def _on_cfg_changed(self) -> None:
+        self._refresh_workspace()
+        sr.save_config(self.cfg)
+        self.changed.emit()
+
+    def _on_audio_changed(self) -> None:
+        """麦克风相关改动：只重建音频链路，不用重新解码音效。"""
+        sr.save_config(self.cfg)
+        self.audio_changed.emit()
+
+    def _on_wheel_changed(self) -> None:
+        """外观改了要立刻反映到预览上，否则改半天看不到效果。"""
+        cfg = self.cfg
+        self.preview_cfg["inner_ratio"] = cfg["inner_ratio"]
+        self.preview_cfg["opacity"] = cfg["opacity"]
+        self.preview_cfg["outer_thickness"] = cfg["outer_thickness"]
+        self.preview_cfg["show_names"] = cfg["show_names"]
+        # 「整体大小」不传给预览：预览固定按 100% 的样子画，
+        # 拖那个滑块时只有游戏里的轮盘会变，预览保持稳定不跟着涨缩
+        self.preview_cfg["wheel_scale"] = 1.0
+        self._fit_deck()
+        sr.save_config(cfg)
+
+    def _on_palette(self, hexv: str) -> None:
+        """应用主题色变了：换色 + 重新套一遍样式表，整个界面立刻跟着变。"""
+        theme.set_accent(hexv)
+        self.apply_theme()
+        sr.save_config(self.cfg)
+        self.changed.emit()
+
+    def apply_theme(self) -> None:
+        """把当前主题色套到所有窗口和内置的着色控件上。"""
+        self.setStyleSheet(build_qss())
+        self._restyle_children()
+        self._sync_preview_color()
+        self.preview.update()
+        self.page_wheel.refresh_wheels()   # 列表里的颜色标记也要重画
+
+    def _restyle_children(self) -> None:
+        """行内写死了 accent 颜色的地方，换色后手动补一次。
+
+        这些控件在构造时把颜色拼进了 styleSheet（父窗口的 QSS 管不到），
+        数量不多，集中在这里处理，比给每个控件挂 objectName 简单。
+        """
+        from PySide6.QtWidgets import QLabel as _L
+
+        for lab in self.findChildren(_L):
+            ss = lab.styleSheet()
+            if "font-size:11px;font-weight:600" in ss or "font-weight:600" in ss:
+                if "#0f9485" in ss.lower() or "color:" in ss:
+                    lab.setStyleSheet(
+                        f"color:{accent_hex()};font-size:{'11' if '11px' in ss else '12'}px;"
+                        "font-weight:600;background:transparent;"
+                    )
+
+    def _sync_preview_color(self) -> None:
+        """让预览用"当前这套轮盘"的颜色（没设就跟随主题色）。"""
+        color = ""
+        if self.scfg is not None:
+            try:
+                color = self.scfg.wheel_color()
+            except Exception:
+                color = ""
+        self.preview.accent_rgb = color or None
+
+    def _on_wheel_color(self, hexv: str) -> None:
+        """只换了轮盘颜色：重画预览，界面配色不动。"""
+        self._sync_preview_color()
+        self.preview.update()
+        self.page_wheel.refresh_wheels()
+
+    def on_wheel_switched(self) -> None:
+        """主程序真的切完轮盘了：把界面上的东西全刷一遍。"""
+        self.bank.reload()
+        self._sync_preview_color()
+        self._refresh_all()
+        self.page_wheel.refresh_wheels()
+        self.page_wheel._refresh_color_dots()
+        self.detail.set_sound(
+            self.bank.full_at(self.preview.selected)
+            if self.preview.selected is not None else None
+        )
+
+    def showEvent(self, e) -> None:  # noqa: N802
+        super().showEvent(e)
+        self._edge_watch_start()
+        # 每次打开都重新扫一遍：用户可能刚在文件夹里放了/删了文件
+        self.bank.reload()
+        self._sync_preview_color()
+        self._refresh_all()
+        self.page_wheel.refresh_wheels()
+        self.page_wheel._refresh_color_dots()
+        self._maybe_show_help_tip()
+        if self._animated() and not self.isMinimized():
+            self._fade_window(0.24, 1.0)
+
+    def closeEvent(self, e) -> None:  # noqa: N802
+        e.ignore()
+        if self._closing:
+            return
+        # 引导卡还开着就一起收掉，顺便把「看过」记下来，下次打开别再打扰
+        if self._tip is not None:
+            self._close_help_tip()
+        self._save_geometry()      # 刚拖完就关窗口的话，别等那个延时定时器
+        if getattr(self, "_geom_timer", None) is not None:
+            self._geom_timer.stop()
+        if self._animated() and self.isVisible() and not self.isMinimized():
+            self._closing = True
+            self._fade_window(self.windowOpacity(), 0.0, self._finish_close)
+        else:
+            self._finish_close()
+
+    def _finish_close(self):
+        self.hide()
+        self.setWindowOpacity(1.0)
+        self._closing = False
+        self.closed.emit()

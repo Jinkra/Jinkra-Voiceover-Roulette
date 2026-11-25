@@ -1,0 +1,5 @@
+PySide6-Addons>=6.6
+numpy>=1.24
+
+# For packaging only:
+#   pip install pyinstaller

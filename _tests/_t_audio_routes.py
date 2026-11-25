@@ -1,0 +1,71 @@
+"""Jinkra 端点筛选、混音与无驱动回退。"""
+
+import sys
+from pathlib import Path
+import numpy as np
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from PySide6.QtWidgets import QApplication
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import sr_roulette as sr
+
+
+def device(name: str):
+    return SimpleNamespace(description=lambda: name)
+
+
+def main() -> None:
+    app = QApplication([])
+    render = device("扬声器 (Jinkra Mix Input)")
+    mic = device("麦克风 (2- Jinkra Virtual Mic)")
+    external = device("Voicemeeter Input (VB-Audio Voicemeeter VAIO)")
+    inputs = [device("CABLE Output (VB-Audio Virtual Cable)")]
+    outputs = [render, external]
+    with patch.object(sr, "virtual_outputs", return_value=outputs), \
+         patch.object(sr, "all_inputs", return_value=inputs):
+        assert sr.guess_virtual_output() is None
+        assert sr.voice_input_for(external.description()) is None
+        inputs.append(mic)
+        assert sr.guess_virtual_output() is render
+        assert sr.voice_input_for(render.description()) is mic
+        inputs.append(device("Jinkra Virtual Mic"))
+        assert sr.guess_virtual_output() is None
+    assert sr.is_virtual_name(mic.description())
+    physical = device("USB Mic")
+    with patch.object(sr, "find_input", return_value=physical):
+        assert sr.capture_candidates("USB Mic") == [physical]
+    with patch.object(sr, "find_input", return_value=None):
+        assert sr.capture_candidates("Offline USB Mic") == []
+
+    fmt = sr._fmt(48000, 2, sr.QAudioFormat.Float)
+    mixed = sr.Mixer(fmt)
+    mixed.volume = 1.0
+    mixed.mic_gain = 1.0
+    mixed.mic_target = 2400
+    mixed.mic = sr.MicCapture(fmt)
+    frames = 2400
+    time = np.arange(frames, dtype=np.float32) / 48000
+    mic_pcm = np.repeat((0.15 * np.sin(2 * np.pi * 380 * time))[:, None], 2, axis=1)
+    effects = np.repeat((0.15 * np.sin(2 * np.pi * 900 * time))[:, None], 2, axis=1)
+    mixed.mic.push(mic_pcm.astype(np.float32).tobytes() * 2)
+    assert mixed.trigger(effects.astype(np.float32))
+    received = np.frombuffer(mixed.readData(frames * 8), dtype=np.float32).reshape(-1, 2)
+    spectrum = np.abs(np.fft.rfft(received[:, 0]))
+    assert spectrum[19] > 100 and spectrum[45] > 100, spectrum[[19, 45]]
+    cfg = dict(sr.DEFAULT_CONFIG, mic_enabled=True, monitor_enabled=False)
+    engine = sr.AudioEngine(sr.SoundBank(20), cfg)
+    with patch.object(sr, "guess_virtual_output", return_value=None), \
+         patch.object(engine, "restart_capture") as capture, \
+         patch.object(engine, "_start_monitor_sink") as monitor:
+        engine.rebuild()
+        capture.assert_not_called()
+        monitor.assert_called_once()
+        assert not engine.audio_status()["cable_active"]
+    print("Jinkra 端点配对、实体麦克风固定、双源混音及本地播放回退通过")
+    app.quit()
+
+
+if __name__ == "__main__":
+    main()

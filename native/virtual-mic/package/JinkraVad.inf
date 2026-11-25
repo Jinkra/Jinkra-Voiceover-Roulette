@@ -1,0 +1,100 @@
+[Version]
+Signature="$WINDOWS NT$"
+Class=MEDIA
+ClassGuid={4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider=%ProviderName%
+DriverVer=07/26/2026,0.3.0.0
+CatalogFile=JinkraVad.cat
+PnpLockdown=1
+
+[Manufacturer]
+%ProviderName%=Jinkra,NTamd64.10.0
+
+[Jinkra.NTamd64.10.0]
+%JinkraVad.DeviceDesc%=JinkraVad_Install,ROOT\JINKRAVAD
+
+[SourceDisksFiles]
+JinkraVad.sys=1
+[SourceDisksNames]
+1=%DiskName%,,,
+[DestinationDirs]
+DefaultDestDir=13
+JinkraVad.CopyFiles=13
+
+[JinkraVad_Install.NT]
+CopyFiles=JinkraVad.CopyFiles
+[JinkraVad.CopyFiles]
+JinkraVad.sys
+
+[JinkraVad_Install.NT.Services]
+AddService=JinkraVad,0x00000002,JinkraVad_Service
+[JinkraVad_Service]
+DisplayName=%JinkraVad.ServiceDesc%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\JinkraVad.sys
+LoadOrderGroup=AudioGroup
+
+[JinkraVad_Install.NT.HW]
+AddReg=JinkraVad.Hardware.AddReg
+[JinkraVad.Hardware.AddReg]
+HKR,,FriendlyName,0x00000000,%JinkraVad.DeviceDesc%
+HKR,,DriverVersion,0x00000000,"0.3.0"
+HKR,,DriverAbi,0x00010001,3
+HKR,,DefaultLatencyMode,0x00010001,1
+
+; The reference strings must match the names passed to PcRegisterSubdevice in
+; adapter.cpp. Registering on GLOBAL instead attaches the interfaces to the device
+; rather than to the subdevices, and Windows then builds no audio endpoint at all.
+[JinkraVad_Install.NT.Interfaces]
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_RenderWave%,JinkraVad.RenderWave.Interface
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_RenderWave%,JinkraVad.RenderWave.Interface
+AddInterface=%KSCATEGORY_RENDER%,%KSNAME_RenderWave%,JinkraVad.RenderWave.Interface
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_RenderTopology%,JinkraVad.RenderTopology.Interface
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_RenderTopology%,JinkraVad.RenderTopology.Interface
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_CaptureWave%,JinkraVad.CaptureWave.Interface
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_CaptureWave%,JinkraVad.CaptureWave.Interface
+AddInterface=%KSCATEGORY_CAPTURE%,%KSNAME_CaptureWave%,JinkraVad.CaptureWave.Interface
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_CaptureTopology%,JinkraVad.CaptureTopology.Interface
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_CaptureTopology%,JinkraVad.CaptureTopology.Interface
+
+[JinkraVad.RenderWave.Interface]
+AddReg=JinkraVad.RenderWave.AddReg
+[JinkraVad.RenderTopology.Interface]
+AddReg=JinkraVad.RenderTopology.AddReg
+[JinkraVad.CaptureWave.Interface]
+AddReg=JinkraVad.CaptureWave.AddReg
+[JinkraVad.CaptureTopology.Interface]
+AddReg=JinkraVad.CaptureTopology.AddReg
+
+[JinkraVad.RenderWave.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%JinkraVad.RenderName%
+[JinkraVad.RenderTopology.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%JinkraVad.RenderName%
+[JinkraVad.CaptureWave.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%JinkraVad.CaptureName%
+[JinkraVad.CaptureTopology.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%JinkraVad.CaptureName%
+
+[Strings]
+ProviderName="Jinkra Project"
+DiskName="Jinkra Virtual Audio Driver installation media"
+JinkraVad.DeviceDesc="Jinkra Virtual Audio"
+JinkraVad.ServiceDesc="Jinkra Virtual Audio Driver"
+JinkraVad.RenderName="Jinkra Mix Input"
+JinkraVad.CaptureName="Jinkra Virtual Mic"
+KSNAME_RenderWave="JinkraRenderWave"
+KSNAME_RenderTopology="JinkraRenderTopology"
+KSNAME_CaptureWave="JinkraCaptureWave"
+KSNAME_CaptureTopology="JinkraCaptureTopology"
+Proxy.CLSID="{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
+KSCATEGORY_AUDIO="{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
+KSCATEGORY_RENDER="{65E8773E-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_CAPTURE="{65E8773D-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_TOPOLOGY="{DDA54A40-1E4C-11D1-A050-405705C10000}"
+KSCATEGORY_REALTIME="{EB115FFC-10C8-4964-831D-6DCB02E6F23F}"
