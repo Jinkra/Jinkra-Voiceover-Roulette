@@ -135,6 +135,36 @@ class _ScanPanel(QWidget):
             painter.drawEllipse(center, radius, radius)
 
 
+class _MicPicker(QComboBox):
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        arrow_center = QPointF(self.width() - 19, self.height() / 2)
+        arrow = QPainterPath(arrow_center + QPointF(-4, -2))
+        arrow.lineTo(arrow_center + QPointF(0, 2))
+        arrow.lineTo(arrow_center + QPointF(4, -2))
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        color = "#315e59" if self.isEnabled() else "#82948d"
+        pen = QPen(QColor(color), 1.5)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.drawPath(arrow)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.showPopup()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class SetupGuide(QDialog):
     def __init__(self, service, activation, cfg, parent=None):
         super().__init__(parent)
@@ -200,8 +230,12 @@ QPushButton#Activate:hover { background: #115a55; }
 QPushButton#Activate:pressed { background: #0b4744; }
 QPushButton#Activate:focus { border-color: #80c6ba; }
 QPushButton#Activate:disabled { color: #4b686d; background: #e4edef; border-color: #d7e4e7; }
-QComboBox#GuideMic { combobox-popup: 0; }
+QComboBox#GuideMic { combobox-popup: 0; padding-right: 38px; }
+QComboBox#GuideMic:hover { background: #f3f9f6; border-color: #7ca595; }
 QComboBox#GuideMic:disabled { color: #576b60; background: #e9ede6; }
+QComboBox#GuideMic::drop-down { subcontrol-origin: border; subcontrol-position: top right;
+    width: 38px; border: none; background: transparent; }
+QComboBox#GuideMic::down-arrow { image: none; width: 0; height: 0; }
 QListView#GuideMicOptions { color: #223b30; background: #ffffff; outline: 0;
     border: 1px solid #bacfc3; border-radius: 7px; padding: 3px;
     selection-color: #133d2b; selection-background-color: #dceee3; }
@@ -263,7 +297,7 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
             "\n启动后，快捷键与轮盘外观都可以继续调整。", note=True))
 
         mic = self._page("设置语音输出", "将你的麦克风与音效混合，供游戏或聊天软件录制。也可以先只使用本地播放。")
-        self.mic_picker = QComboBox()
+        self.mic_picker = _MicPicker()
         self.mic_picker.setObjectName("GuideMic")
         self.mic_picker.setAccessibleName("实体麦克风")
         self.mic_picker.activated.connect(self._remember_mic)
