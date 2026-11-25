@@ -1,4 +1,4 @@
-Jinkra Voiceover Roulette  v1.3.8
+Jinkra Voiceover Roulette  v1.3.9
 Windows 音效轮盘
 
 
@@ -156,7 +156,8 @@ sounds 目录里的所有音效都会列在这儿。
 · 程序、设置（config.json / sounds.json）和音效（sounds 文件夹）都在安装目录里，
   默认是 %LOCALAPPDATA%\Programs\Jinkra Voiceover Roulette。
 · 升级：用「检查更新」原位更新，或者直接运行新版安装包装到同一目录。
-  设置、音效和激活记录原样保留，被你删改过的示例音效也不会被放回来。
+  设置、音效和激活记录原样保留，被你删掉的示例音效也不会被放回来。
+  程序还开着也没关系，安装包会询问后自动关闭它。
 · 以前的便携版：运行安装包时把安装目录选成原来的文件夹即可转成安装版。
 · 卸载：在 Windows「设置 → 应用」里找到 Jinkra Voiceover Roulette，或运行安装目录里的
   Uninstall Jinkra Voiceover Roulette.exe。默认删除整个安装目录；勾选「保留用户数据」可保留

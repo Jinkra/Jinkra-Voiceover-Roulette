@@ -41,6 +41,12 @@ class UpdateDialog(QDialog):
         layout.addWidget(self.log, 1)
         self.bar = QProgressBar()
         self.bar.setRange(0, 100)
+        self.bar.setAlignment(Qt.AlignCenter)
+        # 全局主题会把文字设成浅色，落在浅色进度条上看不清：这里固定成深色字、浅色进度块。
+        self.bar.setStyleSheet(
+            "QProgressBar { color: #1f2b25; background: #e4ebe6; border: 1px solid #b9c9c0;"
+            " border-radius: 5px; min-height: 20px; font-weight: 600; }"
+            "QProgressBar::chunk { background: #9ed3bb; border-radius: 4px; }")
         self.bar.hide()
         layout.addWidget(self.bar)
 

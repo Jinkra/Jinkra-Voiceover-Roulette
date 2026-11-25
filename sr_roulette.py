@@ -168,7 +168,7 @@ import theme
 from theme import accent, accent_dark, accent_light, set_accent
 
 APP_NAME = "Jinkra Voiceover Roulette"
-APP_VERSION = "v1.3.8"
+APP_VERSION = "v1.3.9"
 
 DEBUG = os.environ.get("SR_DEBUG") == "1"
 
@@ -5926,6 +5926,26 @@ def acquire_single_instance() -> bool:
     return ctypes.get_last_error() != 183  # ERROR_ALREADY_EXISTS
 
 
+def clean_update_leftovers() -> None:
+    """删掉上次应用内更新留下的 .jinkra-update-* 暂存文件夹（里面有约 50MB 的旧版备份）。
+
+    更新程序刚启动新版时还在运行，要留着备份以便新版异常退出时回滚；
+    它在运行时自身的 apply-update.exe 删不掉，借此判断，删不掉就整个文件夹先不动。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    import shutil
+
+    for folder in BASE_DIR.glob(".jinkra-update-*"):
+        if not folder.is_dir():
+            continue
+        try:
+            (folder / "apply-update.exe").unlink(missing_ok=True)
+        except OSError:
+            continue  # 更新程序还在运行
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def sync_install_record() -> None:
     """安装版在应用内更新后，把「应用和功能」里显示的版本号同步过来。"""
     if not getattr(sys, "frozen", False):
@@ -5962,6 +5982,7 @@ def main() -> int:
 
     sys.excepthook = _excepthook
     sync_install_record()
+    clean_update_leftovers()
 
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)

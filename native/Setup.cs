@@ -119,17 +119,17 @@ internal sealed class RouletteSetup : Form {
         keepData.Visible = removing;
         removeCable = PlaceChoice("同时卸载虚拟麦克风（VB-CABLE）", 291, false);
         removeCable.Visible = removing && CableInstalled();
-        status = PlaceLabel(removing ? "将删除整个安装目录，包括设置、音效、降噪模型和激活记录。"
+        status = PlaceLabel(removing ? DeleteWarning(uninstallDirectory)
                                      : "仅为当前 Windows 用户安装，不需要管理员权限。",
             301, 332, 409, 60, 9, Muted, FontStyle.Regular);
         removeCable.CheckedChanged += delegate {
             if (removeCable.Checked) SetStatus("卸载虚拟麦克风需要确认 Windows 管理员提示。其他软件若也在用 VB-CABLE，会一起失去这个设备。", false);
             else SetStatus(keepData.Checked ? "保留设置、音效和激活记录，重新安装到同一目录即可继续使用。"
-                                            : "将删除整个安装目录，包括设置、音效、降噪模型和激活记录。", false);
+                                            : DeleteWarning(directory.Text), !keepData.Checked && SoundCount(directory.Text) > 0);
         };
         keepData.CheckedChanged += delegate {
             SetStatus(keepData.Checked ? "保留设置、音效和激活记录，重新安装到同一目录即可继续使用。"
-                                       : "将删除整个安装目录，包括设置、音效、降噪模型和激活记录。", false);
+                                       : DeleteWarning(directory.Text), !keepData.Checked && SoundCount(directory.Text) > 0);
         };
         progress.SetBounds(302, 412, 404, 10);
         progress.Visible = false;
@@ -295,6 +295,7 @@ internal sealed class RouletteSetup : Form {
         try { target = ValidateDirectory(directory.Text, false); }
         catch (Exception error) { SetStatus(error.Message, true); return; }
         directory.Text = target;
+        if (!CloseRunningWithConsent(target, "安装")) return;
         running = true;
         directory.Enabled = browse.Enabled = next.Enabled = back.Enabled = close.Enabled = false;
         desktopShortcut.Enabled = launchAfter.Enabled = false;
@@ -339,6 +340,9 @@ internal sealed class RouletteSetup : Form {
 
     internal static void Install(string directory, IProgress<int> progress, bool desktop) {
         EnsureClosed(directory);
+        // 示例音效只在全新安装时放入。升级时（已有安装或已有 sounds.json）一律不碰 sounds，
+        // 用户删掉的示例不会被放回来，自己的音效更不会被覆盖。
+        bool firstInstall = !IsInstalled(directory) && !File.Exists(Path.Combine(directory, "sounds.json"));
         Directory.CreateDirectory(directory);
         var installed = new List<string>();
         string root = Path.GetFullPath(directory).TrimEnd('\\') + "\\";
@@ -352,9 +356,8 @@ internal sealed class RouletteSetup : Form {
                     string relative = entry.FullName.Replace('/', '\\');
                     string target = Path.GetFullPath(Path.Combine(root, relative));
                     if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new IOException("安装包内容异常。");
-                    // 示例音效只在第一次安装时放入；用户删改过的不再覆盖。
                     bool sample = relative.StartsWith("sounds\\", StringComparison.OrdinalIgnoreCase);
-                    if (!(sample && File.Exists(target))) {
+                    if (!sample || (firstInstall && !File.Exists(target))) {
                         Directory.CreateDirectory(Path.GetDirectoryName(target));
                         string temporary = target + ".jinkra-setup";
                         entry.ExtractToFile(temporary, true);
@@ -404,6 +407,7 @@ internal sealed class RouletteSetup : Form {
         string target = directory.Text;
         bool keep = keepData.Checked;
         bool cable = removeCable.Visible && removeCable.Checked;
+        if (!CloseRunningWithConsent(target, "卸载")) return;
         running = true;
         removeCable.Enabled = false;
         keepData.Enabled = back.Enabled = next.Enabled = close.Enabled = false;
@@ -538,18 +542,61 @@ internal sealed class RouletteSetup : Form {
 
     // ---------------------------------------------------------------- 工具
 
-    private static void EnsureClosed(string directory) {
+    // 运行中的本程序（单文件 EXE 会有启动器和主程序两个同名进程）。
+    private static List<Process> RunningCopies(string directory) {
         string exe = Path.GetFullPath(Path.Combine(directory, ProductExe));
+        var found = new List<Process>();
         foreach (Process process in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(ProductExe))) {
+            string path;
+            try { path = process.MainModule.FileName; }
+            catch (Exception) { process.Dispose(); continue; }
+            if (String.Equals(Path.GetFullPath(path), exe, StringComparison.OrdinalIgnoreCase)) found.Add(process);
+            else process.Dispose();
+        }
+        return found;
+    }
+
+    internal static bool IsRunning(string directory) {
+        List<Process> running = RunningCopies(directory);
+        foreach (Process process in running) process.Dispose();
+        return running.Count > 0;
+    }
+
+    // 结束正在运行的本程序。程序的设置和音效都随改随存，不会丢。
+    internal static void CloseRunning(string directory) {
+        foreach (Process process in RunningCopies(directory)) {
             using (process) {
-                string path;
-                try { path = process.MainModule.FileName; }
-                catch (Exception) { continue; }
-                if (String.Equals(Path.GetFullPath(path), exe, StringComparison.OrdinalIgnoreCase)) {
-                    throw new IOException("Jinkra Voiceover Roulette 正在运行。请在托盘图标右键选择「退出」后重试。");
-                }
+                try {
+                    if (!process.HasExited) process.Kill();
+                    process.WaitForExit(5000);
+                } catch (Exception) {}
             }
         }
+        System.Threading.Thread.Sleep(500);  // 等系统释放 EXE 文件
+    }
+
+    private static void EnsureClosed(string directory) {
+        if (IsRunning(directory)) {
+            throw new IOException("Jinkra Voiceover Roulette 正在运行。请在托盘图标右键选择「退出」后重试。");
+        }
+    }
+
+    // 图形界面里遇到程序正在运行：询问后自动关闭，而不是让用户自己去托盘退出。
+    private bool CloseRunningWithConsent(string target, string action) {
+        if (!IsRunning(target)) return true;
+        DialogResult answer = MessageBox.Show(this,
+            "Jinkra Voiceover Roulette 正在运行。是否关闭它并继续" + action + "？\n\n设置和音效都已自动保存，不会丢失。",
+            Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1);
+        if (answer != DialogResult.Yes) {
+            SetStatus("请先退出 Jinkra Voiceover Roulette（托盘图标右键 →「退出」）再" + action + "。", true);
+            return false;
+        }
+        CloseRunning(target);
+        if (IsRunning(target)) {
+            SetStatus("无法关闭 Jinkra Voiceover Roulette，请在托盘图标右键选择「退出」后重试。", true);
+            return false;
+        }
+        return true;
     }
 
     // 刚写入的大文件常被杀毒软件短暂占用，替换时稍等重试。
@@ -602,6 +649,20 @@ internal sealed class RouletteSetup : Form {
             throw new IOException("请选择空目录，或 Jinkra Voiceover Roulette 现有的目录。");
         }
         return folder;
+    }
+
+    private static int SoundCount(string folder) {
+        try {
+            string sounds = Path.Combine(folder ?? "", "sounds");
+            return Directory.Exists(sounds) ? Directory.GetFiles(sounds, "*", SearchOption.AllDirectories).Length : 0;
+        } catch (Exception) { return 0; }
+    }
+
+    private static string DeleteWarning(string folder) {
+        int count = SoundCount(folder);
+        return count > 0
+            ? "将删除整个安装目录，包括 sounds 里的 " + count + " 个音效和设置。要保留请勾选上方选项。"
+            : "将删除整个安装目录，包括设置、降噪模型和激活记录。";
     }
 
     private static bool OnlyUserData(string folder) {
