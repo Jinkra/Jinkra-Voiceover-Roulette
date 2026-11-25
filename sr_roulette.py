@@ -167,7 +167,7 @@ import theme
 from theme import accent, accent_dark, accent_light, set_accent
 
 APP_NAME = "Jinkra Voiceover Roulette"
-APP_VERSION = "v1.3.4"
+APP_VERSION = "v1.3.5"
 
 DEBUG = os.environ.get("SR_DEBUG") == "1"
 
@@ -5897,6 +5897,25 @@ def acquire_single_instance() -> bool:
     return ctypes.get_last_error() != 183  # ERROR_ALREADY_EXISTS
 
 
+def sync_install_record() -> None:
+    """安装版在应用内更新后，把「应用和功能」里显示的版本号同步过来。"""
+    if not getattr(sys, "frozen", False):
+        return
+    if not (BASE_DIR / f"Uninstall {APP_NAME}.exe").is_file():
+        return
+    import winreg
+
+    key = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\JinkraVoiceoverRoulette"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key, 0,
+                            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as record:
+            location, _ = winreg.QueryValueEx(record, "InstallLocation")
+            if Path(location).resolve() == BASE_DIR.resolve():
+                winreg.SetValueEx(record, "DisplayVersion", 0, winreg.REG_SZ, APP_VERSION.lstrip("v"))
+    except OSError:
+        pass
+
+
 def main() -> int:
     if not acquire_single_instance():
         ctypes.windll.user32.MessageBoxW(
@@ -5913,6 +5932,7 @@ def main() -> int:
         _log("".join(traceback.format_exception(exc_type, exc, tb)))
 
     sys.excepthook = _excepthook
+    sync_install_record()
 
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)

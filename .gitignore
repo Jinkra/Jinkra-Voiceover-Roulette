@@ -16,6 +16,7 @@ venv/
 # ---- PyInstaller 打包产物 ----
 build/
 dist/
+release/
 *.zip
 
 # ---- 本地大文件 / 第三方内容（体积大或不该由本仓库分发） ----

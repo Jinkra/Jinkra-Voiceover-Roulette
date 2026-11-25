@@ -47,6 +47,7 @@
 
 ![语音设备向导](docs/setup.png)
 
+0. 运行 `Jinkra-Voiceover-Roulette-Setup-vX.Y.Z-x64.exe` 完成安装，从开始菜单或桌面打开。
 1. 在启动向导中用微信扫描「都拓文化」二维码，获取当期激活码。激活凭据按 Windows 用户和软件版本在本地保存。
 2. 使用「上一步」「下一步」浏览轮盘用法和语音设备设置。可以随时在「使用说明」或托盘菜单中重新打开向导。
 3. 在「检查更新」中查看本仓库的最新版本和测试线路。元数据及 SHA-256 来自 GitHub 官方 API，下载会按实测顺序尝试 GitHub 和加速线路。校验通过后可原位更新程序，设置和音效继续使用原目录。
@@ -78,15 +79,32 @@ python sr_roulette.py
 
 音效文件丢进 `sounds/` 目录，回到程序点「重新扫描」，就能拖到轮盘上用了。wav / mp3 / ogg / flac / m4a 都认。
 
-## 打包成 exe
+## 打包成安装包
+
+在 Windows 上运行（需要 Python 依赖和 PyInstaller，C# 编译器使用系统自带的 .NET Framework 4.x）：
 
 ```bash
 pip install pyinstaller
 python gen_icon.py
-python -m PyInstaller JinkraRoulette.spec --noconfirm --clean --distpath dist/Jinkra
+python build_installer.py
 ```
 
-输出在 `dist/Jinkra/Jinkra Voiceover Roulette.exe`。可以直接双击运行。如果以管理员权限运行的游戏收不到热键，可用右键菜单以管理员身份启动 Jinkra。
+脚本会先用 `JinkraRoulette.spec` 打包 EXE（自动校验并嵌入 VB-CABLE 官方驱动包），再生成 `release/` 下的：
+
+- `Jinkra-Voiceover-Roulette-Setup-vX.Y.Z-x64.exe`：安装向导。默认装到 `%LOCALAPPDATA%\Programs\Jinkra Voiceover Roulette`，只为当前用户安装、不需要管理员权限，创建开始菜单和桌面快捷方式，并在「应用和功能」里登记卸载入口。
+- `Jinkra-Voiceover-Roulette-vX.Y.Z-Windows-x64.zip`：应用内「检查更新」下载的包。
+- 两者的 `.sha256`。
+
+安装目录里的 `Uninstall Jinkra Voiceover Roulette.exe` 是卸载向导，可选择保留设置、音效和激活记录。安装器和卸载器的源码在 [native/Setup.cs](native/Setup.cs)。已有的便携版目录可以直接选作安装目录，设置和音效原样保留。
+
+静默安装与卸载（用于测试或部署）：
+
+```bash
+"Jinkra-Voiceover-Roulette-Setup-vX.Y.Z-x64.exe" --silent "D:\Apps\Jinkra Voiceover Roulette" --no-desktop-shortcut
+"Uninstall Jinkra Voiceover Roulette.exe" --uninstall-silent "D:\Apps\Jinkra Voiceover Roulette" --remove-data
+```
+
+如果以管理员权限运行的游戏收不到热键，可用右键菜单以管理员身份启动 Jinkra Voiceover Roulette。
 
 ## 目录
 
@@ -97,6 +115,8 @@ sounds_config.py      sounds.json 的读写、多套轮盘、组合音效的模�
 theme.py              配色的唯一来源（主题色、轮盘色、深浅推导）
 audio_routes.py       自动配对语音播放端和录音端
 JinkraRoulette.spec   PyInstaller 打包配置
+build_installer.py    生成安装包、卸载程序和更新 ZIP
+native/Setup.cs       安装与卸载向导（C#）
 使用说明.txt          随 exe 一起发给最终用户的说明书
 sounds/               音效就放这儿
 _tests/               各功能的自测脚本，每个都能单独跑
@@ -109,7 +129,7 @@ docs/                 README 用的截图
 
 公开仓库和便携包使用合成提示音。可将自己的 WAV、MP3、OGG、FLAC 或 M4A 放入同目录下的 `sounds/` 文件夹。
 
-发布 Windows 更新包时使用 `vX.Y.Z` 标签，资产名为 `Jinkra-Voiceover-Roulette-vX.Y.Z-Windows-x64.zip`，其中应用文件位于 ZIP 根目录并命名为 `Jinkra Voiceover Roulette.exe`。
+发布时使用 `vX.Y.Z` 标签，上传 `build_installer.py` 生成的安装包和更新 ZIP。应用内更新读取的资产名为 `Jinkra-Voiceover-Roulette-vX.Y.Z-Windows-x64.zip`，其中应用文件位于 ZIP 根目录并命名为 `Jinkra Voiceover Roulette.exe`。
 
 ## 说清楚风险
 
