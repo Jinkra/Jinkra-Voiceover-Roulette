@@ -59,6 +59,7 @@ internal sealed class RouletteSetup : Form {
     private readonly CheckBox desktopShortcut;
     private readonly CheckBox launchAfter;
     private readonly CheckBox keepData;
+    private readonly CheckBox removeCable;
     private readonly bool removing;
     private readonly ProgressBar progress = new ProgressBar();
     private bool running;
@@ -115,9 +116,16 @@ internal sealed class RouletteSetup : Form {
         browse.Visible = desktopShortcut.Visible = launchAfter.Visible = !removing;
         keepData = PlaceChoice("保留用户数据（设置、音效、降噪模型和激活记录）", 262, true);
         keepData.Visible = removing;
+        removeCable = PlaceChoice("同时卸载虚拟麦克风（VB-CABLE）", 291, false);
+        removeCable.Visible = removing && CableInstalled();
         status = PlaceLabel(removing ? "保留设置、音效和激活记录，重新安装到同一目录即可继续使用。"
                                      : "仅为当前 Windows 用户安装，不需要管理员权限。",
-            301, removing ? 302 : 332, 409, 60, 9, Muted, FontStyle.Regular);
+            301, 332, 409, 60, 9, Muted, FontStyle.Regular);
+        removeCable.CheckedChanged += delegate {
+            if (removeCable.Checked) SetStatus("卸载虚拟麦克风需要确认 Windows 管理员提示。其他软件若也在用 VB-CABLE，会一起失去这个设备。", false);
+            else SetStatus(keepData.Checked ? "保留设置、音效和激活记录，重新安装到同一目录即可继续使用。"
+                                            : "设置、音效和激活记录将被一并删除。", !keepData.Checked);
+        };
         keepData.CheckedChanged += delegate {
             SetStatus(keepData.Checked ? "保留设置、音效和激活记录，重新安装到同一目录即可继续使用。"
                                        : "设置、音效和激活记录将被一并删除。", !keepData.Checked);
@@ -367,7 +375,9 @@ internal sealed class RouletteSetup : Form {
     private async void BeginUninstall() {
         string target = directory.Text;
         bool keep = keepData.Checked;
+        bool cable = removeCable.Visible && removeCable.Checked;
         running = true;
+        removeCable.Enabled = false;
         keepData.Enabled = back.Enabled = next.Enabled = close.Enabled = false;
         headline.Text = "正在卸载";
         detail.Text = "正在移除程序文件和快捷方式。";
@@ -375,13 +385,18 @@ internal sealed class RouletteSetup : Form {
         progress.Style = ProgressBarStyle.Marquee;
         progress.Visible = true;
         try {
+            string cableResult = null;
+            if (cable) {
+                SetStatus("正在卸载虚拟麦克风…", false);
+                cableResult = await Task.Run(() => RemoveCable(Handle));
+            }
             bool remaining = await Task.Run(() => Uninstall(target, keep));
             complete = true;
             headline.Text = "卸载完成";
             detail.Text = "已移除 Jinkra Voiceover Roulette。";
             SetStatus((keep ? "用户数据保留在 " + target + "。" :
                        remaining ? "部分文件仍被占用，可稍后手动删除 " + target + "。" : "已删除用户数据。") +
-                      "\n虚拟麦克风 VB-CABLE 不会随之卸载，如需移除请在 Windows「设备管理器」中卸载。", remaining);
+                      "\n" + (cableResult ?? "虚拟麦克风 VB-CABLE 已保留。"), remaining || (cable && !CableRemovedMessage(cableResult)));
             progress.Style = ProgressBarStyle.Continuous;
             progress.Value = 100;
             next.Text = "完成";
@@ -395,6 +410,7 @@ internal sealed class RouletteSetup : Form {
             SetStatus(error.Message, true);
             progress.Visible = false;
             keepData.Enabled = true;
+            removeCable.Enabled = true;
         } finally {
             running = false;
             back.Enabled = next.Enabled = close.Enabled = true;
@@ -440,6 +456,50 @@ internal sealed class RouletteSetup : Form {
             try { Directory.Delete(stale, true); } catch (IOException) {} catch (UnauthorizedAccessException) {}
         }
         return remaining;
+    }
+
+    // ---------------------------------------------------------------- 虚拟麦克风
+
+    private const string CableRemoved = "虚拟麦克风 VB-CABLE 已卸载，重启电脑后彻底移除。";
+
+    private static bool CableRemovedMessage(string message) { return message == CableRemoved; }
+
+    internal static bool CableInstalled() {
+        using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\VBAudioVACMME")) {
+            return key != null;
+        }
+    }
+
+    // 用 VB-CABLE 官方安装程序自带的静默卸载参数（-u -h）。驱动包原样嵌在卸载程序里。
+    internal static string RemoveCable(IntPtr owner) {
+        Stream pack = Assembly.GetExecutingAssembly().GetManifestResourceStream("vbcable.zip");
+        if (pack == null) return "卸载程序缺少 VB-CABLE 驱动包，请在「设备管理器」里手动卸载。";
+        string work = Path.Combine(Path.GetTempPath(), "jinkra-vbcable-" + Guid.NewGuid().ToString("N"));
+        try {
+            using (pack)
+            using (var archive = new ZipArchive(pack, ZipArchiveMode.Read)) {
+                archive.ExtractToDirectory(work);
+            }
+            string setup = Path.Combine(work, "VBCABLE_Setup_x64.exe");
+            if (!File.Exists(setup)) return "VB-CABLE 驱动包不完整，请在「设备管理器」里手动卸载。";
+            var start = new ProcessStartInfo(setup, "-u -h") {
+                Verb = "runas", UseShellExecute = true, WorkingDirectory = work,
+                WindowStyle = ProcessWindowStyle.Hidden, ErrorDialog = false
+            };
+            if (owner != IntPtr.Zero) start.ErrorDialogParentHandle = owner;
+            using (Process process = Process.Start(start)) {
+                if (!process.WaitForExit(120000)) return "VB-CABLE 卸载超时，请稍后在「设备管理器」里检查。";
+            }
+            for (int attempt = 0; attempt < 20 && CableInstalled(); attempt++) System.Threading.Thread.Sleep(500);
+            return CableInstalled() ? "VB-CABLE 卸载程序已结束，重启电脑后虚拟麦克风会被移除。" : CableRemoved;
+        } catch (System.ComponentModel.Win32Exception error) {
+            return error.NativeErrorCode == 1223 ? "已取消管理员确认，虚拟麦克风 VB-CABLE 已保留。"
+                                                 : "虚拟麦克风卸载失败：" + error.Message;
+        } catch (Exception error) {
+            return "虚拟麦克风卸载失败：" + error.Message;
+        } finally {
+            try { Directory.Delete(work, true); } catch (IOException) {} catch (UnauthorizedAccessException) {}
+        }
     }
 
     // ---------------------------------------------------------------- 工具
@@ -617,6 +677,7 @@ internal sealed class RouletteSetup : Form {
                 if (!cleanup && RelaunchFromTemp(args, target)) return 0;
                 if (args[0] == "--uninstall-silent") {
                     bool removeData = Array.IndexOf(args, "--remove-data") >= 0;
+                    if (Array.IndexOf(args, "--remove-vbcable") >= 0 && CableInstalled()) RemoveCable(IntPtr.Zero);
                     try { return Uninstall(target, !removeData) ? 3 : 0; }
                     catch (Exception error) { ReportSilentError(error); return 1; }
                 }

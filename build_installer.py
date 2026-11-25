@@ -103,7 +103,13 @@ def main():
     with tempfile.TemporaryDirectory(prefix="jinkra-setup-build-") as temporary:
         staging = Path(temporary)
         uninstaller = staging / UNINSTALLER
-        compile_setup(uninstaller, version, staging)
+        # 卸载程序原样附带 VB-CABLE 驱动包，用于「同时卸载虚拟麦克风」
+        sys.path.insert(0, str(ROOT))
+        import driver_setup
+        cable = ROOT / "build" / driver_setup.VB_CABLE_PACK
+        if not driver_setup._valid_pack(cable):
+            raise SystemExit(f"缺少或校验失败：{cable}，请先完整打包一次 EXE。")
+        compile_setup(uninstaller, version, staging, [(cable, "vbcable.zip")])
         payload = staging / "payload.zip"
         write_zip(payload, app_files(exe) + [(uninstaller, UNINSTALLER)])
         compile_setup(setup, version, staging, [(payload, "payload.zip")])
