@@ -99,7 +99,7 @@ python build_installer.py
 
 - `Jinkra-Voiceover-Roulette-Setup-vX.Y.Z-x64.exe`：安装向导。默认装到 `%LOCALAPPDATA%\Programs\Jinkra Voiceover Roulette`，只为当前用户安装、不需要管理员权限，创建开始菜单和桌面快捷方式，并在「应用和功能」里登记卸载入口。
 - `Jinkra-Voiceover-Roulette-vX.Y.Z-Windows-x64.zip`：应用内「检查更新」下载的包。
-- 两者的 `.sha256`。
+- 两者的 `.sha256`，以及备用发布清单 `latest.json`。
 
 安装目录里的 `Uninstall Jinkra Voiceover Roulette.exe` 是卸载向导，默认删除整个安装目录，也可勾选保留设置、音效和激活记录，也可勾选「同时卸载虚拟麦克风」（用 VB-CABLE 安装程序自带的 `-u -h` 静默卸载，需确认管理员提示）。安装器和卸载器的源码在 [native/Setup.cs](native/Setup.cs)。已有的便携版目录可以直接选作安装目录，设置和音效原样保留。
 
@@ -135,7 +135,7 @@ docs/                 README 用的截图
 
 公开仓库和便携包使用合成提示音。可将自己的 WAV、MP3、OGG、FLAC 或 M4A 放入同目录下的 `sounds/` 文件夹。
 
-发布时使用 `vX.Y.Z` 标签，上传 `build_installer.py` 生成的安装包和更新 ZIP。应用内更新读取的资产名为 `Jinkra-Voiceover-Roulette-vX.Y.Z-Windows-x64.zip`，其中应用文件位于 ZIP 根目录并命名为 `Jinkra Voiceover Roulette.exe`。
+发布时使用 `vX.Y.Z` 标签，上传 `build_installer.py` 生成的安装包、更新 ZIP、两者的 `.sha256` 和 `latest.json`。`latest.json` 是备用发布清单：GitHub 接口限流（HTTP 403）时，应用内更新经直连和加速线路读取它。先写好 `release/notes-vX.Y.Z.md` 再打包，说明会一并写进清单。应用内更新读取的资产名为 `Jinkra-Voiceover-Roulette-vX.Y.Z-Windows-x64.zip`，其中应用文件位于 ZIP 根目录并命名为 `Jinkra Voiceover Roulette.exe`。
 
 ## 说清楚风险
 
