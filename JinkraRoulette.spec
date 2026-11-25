@@ -12,6 +12,7 @@
 用：python -m PyInstaller --noconfirm --distpath dist --workpath build JinkraRoulette.spec
 """
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -32,6 +33,21 @@ DATAS = [("LICENSE", "."), ("icon.ico", "."), ("assets/wechat-promotion.png", ".
 DRIVER_HELPER = BUILD / "jinkra-driver-helper.exe"
 if DRIVER_HELPER.is_file():
     DATAS.append((str(DRIVER_HELPER), "."))
+
+signed_driver_dir = os.environ.get("JINKRA_SIGNED_DRIVER_DIR")
+if signed_driver_dir:
+    signed_driver_dir = Path(signed_driver_dir).resolve()
+    inf = signed_driver_dir / "JinkraVad.inf"
+    catalog = signed_driver_dir / "JinkraVad.cat"
+    binary = signed_driver_dir / "JinkraVad.sys"
+    if not all(path.is_file() for path in (inf, catalog, binary, DRIVER_HELPER)):
+        raise SystemExit("正式驱动包需要 INF、CAT、SYS 和已构建的 Jinkra 驱动安装工具。")
+    sign_tool = os.environ.get("JINKRA_SIGNTOOL") or shutil.which("signtool.exe")
+    if not sign_tool:
+        raise SystemExit("找不到 SignTool。请在 WDK 环境中构建，或设置 JINKRA_SIGNTOOL。")
+    for member in (inf, binary):
+        subprocess.run([sign_tool, "verify", "/kp", "/c", str(catalog), str(member)], check=True)
+    DATAS.extend((str(path), "VirtualMic") for path in (inf, catalog, binary))
 
 EXCLUDES = [
     # QML / Quick 系列（纯 QWidget 绘制用不到）

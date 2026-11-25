@@ -2,12 +2,17 @@
 
 import ctypes
 import re
+import shutil
 import subprocess
+import tempfile
 from ctypes import wintypes as win
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtWidgets import QApplication, QFileDialog
+from PySide6.QtWidgets import QApplication
+
+
+DRIVER_FILES = ("JinkraVad.inf", "JinkraVad.cat", "JinkraVad.sys")
 
 
 def _helper(directory, resources):
@@ -18,7 +23,7 @@ def _helper(directory, resources):
 
 
 def _has_package(package):
-    return all((package / f"JinkraVad.{extension}").is_file() for extension in ("inf", "cat", "sys"))
+    return all((package / name).is_file() for name in DRIVER_FILES)
 
 
 class _ShellExecuteInfo(ctypes.Structure):
@@ -55,7 +60,7 @@ class _InstallProcess:
 def _start_install(helper, package, owner):
     package = package.resolve()
     if not _has_package(package):
-        raise OSError("请选择包含 JinkraVad.inf、JinkraVad.cat 和 JinkraVad.sys 的驱动目录。")
+        raise OSError("驱动包不完整，请重新获取 Jinkra 正式安装包。")
     with (package / "JinkraVad.inf").open("rb") as source:
         raw = source.read(65536)
     encoding = "utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
@@ -82,6 +87,7 @@ def _start_install(helper, package, owner):
 
 class DriverInstallation(QObject):
     changed = Signal()
+    installed = Signal(object)
 
     def __init__(self, directory, resources, parent):
         super().__init__(parent)
@@ -89,15 +95,28 @@ class DriverInstallation(QObject):
         self.resources = resources
         self.message = ""
         self.process = None
+        self._owner = None
+        self._stage = None
         self.timer = QTimer(self, interval=350)
         self.timer.timeout.connect(self._poll)
+
+    def _package(self):
+        return next((path for path in (self.resources / "VirtualMic", self.directory / "VirtualMic")
+                     if _has_package(path)), None)
+
+    def can_install(self):
+        return (self.process is None and self._package() is not None
+                and _helper(self.directory, self.resources) is not None)
+
+    def installing_from(self, parent):
+        return self.process is not None and self._owner is parent
 
     def hint(self):
         if self.message:
             return self.message
-        if _has_package(self.directory / "VirtualMic"):
-            return "已找到随附驱动包。安装时 Windows 会验证签名。"
-        return "此版本未随附驱动包。若已有 Jinkra 正式签名驱动，可点「安装虚拟麦克风」选择目录。"
+        if self.can_install():
+            return "点击安装并确认 Windows 提示，完成后自动启用送声。"
+        return "当前构建未随附可安装的正式驱动，可先使用本地播放。"
 
     def install(self, parent):
         if self.process is not None:
@@ -106,22 +125,25 @@ class DriverInstallation(QObject):
             helper = _helper(self.directory, self.resources)
             if helper is None:
                 raise OSError("缺少 Jinkra 驱动安装工具，请重新下载完整的 Jinkra 安装包。")
-            package = self.directory / "VirtualMic"
-            if not _has_package(package):
-                directory = QFileDialog.getExistingDirectory(
-                    parent, "选择 Jinkra 正式签名驱动目录", str(self.directory))
-                if not directory:
-                    return
-                package = Path(directory)
-            self.process = _start_install(helper, package, int(parent.winId()))
+            package = self._package()
+            if package is None:
+                raise OSError("当前构建未随附正式驱动。")
+            # 安装包由提升权限后的独立进程读取，须独立于便携 EXE 的解包生命周期。
+            self._stage = Path(tempfile.mkdtemp(prefix="jinkra-driver-"))
+            for name in DRIVER_FILES:
+                shutil.copyfile(package / name, self._stage / name)
+            self.process = _start_install(helper, self._stage, int(parent.winId()))
         except OSError as error:
+            self._clean_stage()
             self.message = str(error)
         else:
+            self._owner = parent
             self.message = "正在安装 Jinkra Virtual Mic。"
             self.timer.start()
         self.changed.emit()
 
     def _poll(self):
+        success = False
         try:
             result = self.process.result()
         except OSError as error:
@@ -129,18 +151,34 @@ class DriverInstallation(QObject):
         else:
             if result is None:
                 return
+            success = result == 0
             self.message = (
-                "安装程序已完成。设备出现后可启用送声，必要时重启 Windows 后重新检测。"
-                if result == 0 else "Windows 未完成安装。请确认驱动包来自 Jinkra 且带有效签名。"
+                "驱动安装已完成。Windows 识别音频端点后会自动送声，必要时请重启 Windows。"
+                if success else "Windows 未完成驱动安装，请重试并确认管理员提示。"
             )
+            self._clean_stage()
+        owner = self._owner
         self.close()
+        if success:
+            self.installed.emit(owner)
         self.changed.emit()
+
+    def _clean_stage(self):
+        stage, self._stage = self._stage, None
+        if stage is not None:
+            try:
+                for name in DRIVER_FILES:
+                    (stage / name).unlink(missing_ok=True)
+                stage.rmdir()
+            except OSError:
+                pass
 
     def close(self):
         self.timer.stop()
         if self.process is not None:
             self.process.close()
             self.process = None
+        self._owner = None
 
 
 def for_application(directory, resources):

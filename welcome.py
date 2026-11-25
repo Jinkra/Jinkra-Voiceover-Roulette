@@ -287,6 +287,7 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
         self.btn_install.clicked.connect(self._install)
         self.driver_installation = driver_setup.for_application(service.BASE_DIR, service.RESOURCE_DIR)
         self.driver_installation.changed.connect(self._refresh_driver_status)
+        self.driver_installation.installed.connect(self._driver_installed)
         self.btn_refresh = QPushButton("重新检测")
         self.btn_refresh.clicked.connect(self._refresh_audio)
         actions.addWidget(self.btn_install)
@@ -451,9 +452,10 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
             self._refresh_audio()
             self.detect_timer.start()
         if index == 3:
-            self.summary.setText("游戏语音已选中。进入游戏后请选择 Jinkra Virtual Mic。"
-                                 if self.enable_mic.isEnabled() and self.enable_mic.isChecked()
-                                 else "将使用本地播放。虚拟麦克风可在「语音输出」中补设。")
+            if self.enable_mic.isChecked():
+                self.summary.setText("送声已启用。Windows 识别设备后，在游戏或语音软件中选择 Jinkra Virtual Mic。")
+            else:
+                self.summary.setText("将使用本地播放。虚拟麦克风可在「语音输出」中补设。")
         self.pages.setCurrentIndex(index)
         activating = index == 0
         self.rail.setVisible(not activating)
@@ -467,6 +469,7 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
         self.prev.setVisible(index > 1)
         self.skip.setVisible(index in (1, 2))
         self.next.setText("进入工作台" if index == 3 else "下一步")
+        self.next.setEnabled(index != 2 or not self.driver_installation.installing_from(self))
         if activating:
             self.code.setFocus()
         reveal(self.pages, self.cfg.get("animations", True))
@@ -492,9 +495,13 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
     def _refresh_driver_status(self):
         output, missing = self.service.virtual_route_status()
         ready = output is not None
-        self.enable_mic.setEnabled(ready)
-        self.btn_install.setEnabled(not ready and self.driver_installation.process is None)
-        self.btn_install.setText("虚拟麦克风已就绪" if ready else "安装虚拟麦克风")
+        installing = self.driver_installation.installing_from(self)
+        self.enable_mic.setEnabled(ready or self.enable_mic.isChecked())
+        self.btn_install.setEnabled(not ready and self.driver_installation.can_install())
+        self.btn_install.setText("正在安装…" if installing else
+                                 "虚拟麦克风已就绪" if ready else "安装虚拟麦克风")
+        if self.pages.currentIndex() == 2:
+            self.next.setEnabled(not installing)
         self.driver_status.setText("已识别 Jinkra Virtual Mic。请在游戏里选择这个录音设备。"
                                    if ready else f"{missing}\n{self.driver_installation.hint()}")
 
@@ -503,6 +510,10 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
 
     def _install(self):
         self.driver_installation.install(self)
+
+    def _driver_installed(self, owner):
+        if owner is self and self.isVisible():
+            self.enable_mic.setChecked(True)
 
     def _retry_status(self):
         left = int(self.locked_until - time.monotonic() + 0.99)
@@ -547,8 +558,7 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
         self.cfg["help_tip_shown"] = True
         if self.mic_picker.currentData() is not None:
             self.cfg["mic_device"] = str(self.mic_picker.currentData() or "")
-        self.cfg["mic_enabled"] = bool(not local_only and self.enable_mic.isEnabled()
-                                       and self.enable_mic.isChecked())
+        self.cfg["mic_enabled"] = not local_only and self.enable_mic.isChecked()
         self.service.save_config(self.cfg)
         self.accept()
 

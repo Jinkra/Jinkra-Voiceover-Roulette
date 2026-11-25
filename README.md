@@ -57,9 +57,9 @@
 
 在应用中选择实体麦克风。系统安装 Jinkra 自带驱动后，打开送声并在游戏或聊天软件中将输入设为 **Jinkra Virtual Mic**。Jinkra 在应用内完成麦克风与音效混音，并自动识别自己的录音与播放端点。
 
-启动向导和「语音输出」页都有「安装虚拟麦克风」按钮。它会安装 EXE 同目录下 `VirtualMic` 中的驱动，或在该目录缺失时让你选择 Jinkra 正式签名驱动所在的文件夹。Windows 检测到 `Jinkra Virtual Mic` 和 `Jinkra Mix Input` 后即可启用混音送声。
+启动向导和「语音输出」页都有「安装虚拟麦克风」按钮。包含正式签名驱动的构建会在 EXE 内附带驱动。点击按钮并确认 Windows 管理员提示，安装完成后自动启用混音送声。随后在游戏或语音软件中选择 `Jinkra Virtual Mic` 作为输入设备。
 
-当前 Windows 便携包提供本地播放、实体麦克风测试以及驱动安装入口。正式签名驱动仍待发布。驱动工程、验证方法和发布条件见 [Jinkra Virtual Mic](native/virtual-mic/README.md)。
+当前本地构建提供本地播放和实体麦克风测试。正式驱动签名和实机录音验证仍有待完成。驱动工程与打包方法见 [Jinkra Virtual Mic](native/virtual-mic/README.md)。
 
 ## 跑起来
 

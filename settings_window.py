@@ -22,6 +22,7 @@ from PySide6.QtCore import (
     QPointF,
     QRect,
     QRectF,
+    QSignalBlocker,
     QSize,
     Qt,
     QTimer,
@@ -3842,6 +3843,7 @@ class MicPage(QWidget):
         self.btn_install.clicked.connect(self._install_driver)
         self.driver_installation = driver_setup.for_application(sr.BASE_DIR, sr.RESOURCE_DIR)
         self.driver_installation.changed.connect(self._refresh_status)
+        self.driver_installation.installed.connect(self._driver_installed)
         row.addWidget(self.btn_install)
         self.btn_copy = QPushButton("复制设备名")
         self.btn_copy.clicked.connect(self._copy_name)
@@ -3923,6 +3925,8 @@ class MicPage(QWidget):
         self.btn_copy.setText("复制设备名")
 
     def refresh_devices(self) -> None:
+        with QSignalBlocker(self.chk_enable):
+            self.chk_enable.setChecked(bool(self.cfg.get("mic_enabled", False)))
         self.cmb_mic.blockSignals(True)
         self.cmb_mic.clear()
         self.cmb_mic.addItem("自动 · Windows 默认麦克风", "")
@@ -3940,6 +3944,13 @@ class MicPage(QWidget):
 
     def _install_driver(self) -> None:
         self.driver_installation.install(self)
+
+    def _driver_installed(self, owner) -> None:
+        if owner is self:
+            if self.chk_enable.isChecked():
+                self._redetect()
+            else:
+                self.chk_enable.setChecked(True)
 
     def _redetect(self) -> None:
         if self.engine is not None:
@@ -3967,8 +3978,9 @@ class MicPage(QWidget):
         ready = output is not None
         self.chk_enable.setEnabled(ready or enabled)
         self.btn_copy.setEnabled(ready)
-        self.btn_install.setEnabled(not ready and self.driver_installation.process is None)
-        self.btn_install.setText("虚拟麦克风已就绪" if ready else "安装虚拟麦克风")
+        self.btn_install.setEnabled(not ready and self.driver_installation.can_install())
+        self.btn_install.setText("正在安装…" if self.driver_installation.installing_from(self) else
+                                 "虚拟麦克风已就绪" if ready else "安装虚拟麦克风")
         if not ready:
             lines = [missing, self.driver_installation.hint()]
         elif status.get("cable_active") and status.get("cable") == output.description():
