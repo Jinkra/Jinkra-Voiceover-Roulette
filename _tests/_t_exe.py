@@ -22,7 +22,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-EXE = ROOT / "dist" / "SR Voiceover Roulette.exe"
+EXE = ROOT / "dist" / "Jinkra Voiceover Roulette.exe"
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -175,7 +175,7 @@ def clean_env(home: Path) -> dict:
 
 def main() -> int:
     print("=" * 58)
-    print("SR Voiceover Roulette exe 验证（干净环境）")
+    print("Jinkra Voiceover Roulette exe 验证（干净环境）")
     print("=" * 58)
 
     if not EXE.exists():

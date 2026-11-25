@@ -4295,11 +4295,7 @@ class HelpPage(QWidget):
 
         # ================= 二、开发者说明 =================
         s2 = self._new_section("二、开发者说明")
-        s2.para("上游项目为 SR Voiceover Roulette。原作者迟昼（B 站账号 缪缪缪尔赛思），采用 MIT 许可。")
-        s2.para(
-            "Jinkra 版更新了界面、图标和语音设备配对流程。"
-            "完整版权和许可条款随程序附在 LICENSE 文件中。"
-        )
+        s2.para("本程序采用 MIT 许可，完整许可条款随程序附在 LICENSE 文件中。")
         s2.para("音效素材", "head")
         s2.para(
             "便携包和公开仓库附带合成提示音。"

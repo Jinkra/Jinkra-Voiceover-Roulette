@@ -6,9 +6,7 @@
 应用把选中的实体麦克风和音效在用户态混音，
 通过 WASAPI 共享模式写入播放端。驱动用非分页环形缓冲将 PCM 提供给录音端。
 
-驱动及原生安装辅助工具改造自 MicDeck VAD 的
-[4ec7e53](https://github.com/3godzinyL/Virtual-Soundboard-Audio-Windows-Mixer/tree/4ec7e53c0ac37291187d92f3d75bf88af469895c/drivers/micdeck-vad)。
-保留原有 MIT 许可。Jinkra 使用独立的硬件 ID、服务名、接口名称与属性集 GUID。
+驱动工程采用 MIT 许可，见同目录的 LICENSE.md。Jinkra 使用独立的硬件 ID、服务名、接口名称与属性集 GUID。
 
 ## 构建和发布
 

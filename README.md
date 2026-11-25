@@ -2,7 +2,7 @@
 
 一个**游戏内音效轮盘**，任何游戏都能用。长按一个键，屏幕中间弹出轮盘，鼠标一划、松手，你放进去的语音就播出来了。
 
-一个 Windows 音效轮盘，采用石墨灰、亚麻白和青灰配色，提供自适应工作台和带刻度的轮盘。改造自 [迟昼的 SR Voiceover Roulette](https://github.com/ChiZhou6/SR-Voiceover-Roulette)，沿用 MIT 许可证。
+一个 Windows 音效轮盘，采用石墨灰、亚麻白和青灰配色，提供自适应工作台和带刻度的轮盘。
 
 ![主界面](docs/main.png)
 
@@ -144,6 +144,4 @@ docs/                 README 用的截图
 
 ## 许可
 
-[MIT](LICENSE) © 2026 ChiZhou（迟昼）
-
-原项目作者为迟昼（B 站账号 缪缪缪尔赛思）。
+[MIT](LICENSE)

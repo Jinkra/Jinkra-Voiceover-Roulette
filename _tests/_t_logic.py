@@ -1,4 +1,4 @@
-"""SR Voiceover Roulette - 逻辑自测（离屏，不需要显示器）
+"""Jinkra Voiceover Roulette - 逻辑自测（离屏，不需要显示器）
 
 运行：
   set QT_QPA_PLATFORM=offscreen
@@ -309,7 +309,7 @@ def test_center_alignment() -> None:
 def main() -> int:
     app = QApplication(sys.argv)
     print("=" * 56)
-    print("SR Voiceover Roulette 逻辑自测（离屏）")
+    print("Jinkra Voiceover Roulette 逻辑自测（离屏）")
     print("=" * 56)
 
     test_vk()

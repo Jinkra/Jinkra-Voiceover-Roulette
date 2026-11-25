@@ -12,8 +12,8 @@ app.setFont(QFont("Microsoft YaHei", 9))
 import sounds_config as sc
 import sr_roulette as sr
 import settings_window as sw
-sr.SOUNDS_DIR = Path("SR Voiceover Roulette_发布版/sounds")
-cfg = sc.SoundsConfig(Path("SR Voiceover Roulette_发布版/sounds.json"))
+sr.SOUNDS_DIR = Path("Jinkra Voiceover Roulette_发布版/sounds")
+cfg = sc.SoundsConfig(Path("Jinkra Voiceover Roulette_发布版/sounds.json"))
 cfg.load()
 bank = sr.SoundBank(8, scfg=cfg)
 win = sw.SettingsWindow(dict(sr.DEFAULT_CONFIG), cfg, bank, None)

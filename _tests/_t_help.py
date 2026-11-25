@@ -58,7 +58,7 @@ check(page.sections[3].head.text().startswith("▼"), "常见问题默认是 ▼
       page.sections[3].head.text())
 
 heads = [l.text() for l in page.findChildren(QLabel)]
-check(any("迟昼" in t and "缪缪缪尔赛思" in t for t in heads), "顶部写明了作者与 B 站账号")
+check(not any(name in t for t in heads for name in ("迟昼", "缪缪缪尔赛思", "SR Voiceover")), "界面里没有原项目署名")
 check(any("仅供娱乐，安全性请使用者自行判断" in t for t in heads),
       "顶部写明了仅供娱乐 / 自行判断")
 btns = [b.text() for b in page.findChildren(QPushButton)]
@@ -110,8 +110,8 @@ check(i_did < i_file < i_warn, "小节顺序：做了什么 → 写了哪些文�
       f"{i_did}/{i_file}/{i_warn}")
 
 t2 = all_text(page.sections[1])
-check("迟昼" in t2 and "缪缪缪尔赛思" in t2, "开发者署名与 B 站账号正确")
-check("MIT" in t2 and "LICENSE" in t2, "标明上游许可证和随附文件")
+check("迟昼" not in t2 and "上游" not in t2, "开发者说明不再提原项目")
+check("MIT" in t2 and "LICENSE" in t2, "标明许可证和随附文件")
 
 t3 = all_text(page.sections[2])
 check("5｜调每个音效" in t3, "教程第 5 节标题改成「调每个音效」")

@@ -32,7 +32,7 @@ def check(cond: bool, label: str, detail: str = "") -> None:
 def main() -> int:
     app = QApplication(sys.argv)
     print("=" * 56)
-    print("SR Voiceover Roulette 播放验证")
+    print("Jinkra Voiceover Roulette 播放验证")
     print("=" * 56)
 
     out = QMediaPlayer()

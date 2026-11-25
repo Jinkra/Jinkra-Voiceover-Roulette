@@ -10,8 +10,8 @@ for f in ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/msyhbd.ttc"):
     QFontDatabase.addApplicationFont(f)
 app.setFont(QFont("Microsoft YaHei", 9))
 import sounds_config as sc, sr_roulette as sr
-sr.SOUNDS_DIR = Path("SR Voiceover Roulette_发布版/sounds")
-cfg = sc.SoundsConfig(Path("SR Voiceover Roulette_发布版/sounds.json")); cfg.load()
+sr.SOUNDS_DIR = Path("Jinkra Voiceover Roulette_发布版/sounds")
+cfg = sc.SoundsConfig(Path("Jinkra Voiceover Roulette_发布版/sounds.json")); cfg.load()
 bank = sr.SoundBank(8, scfg=cfg)
 uicfg = dict(sr.DEFAULT_CONFIG)
 
