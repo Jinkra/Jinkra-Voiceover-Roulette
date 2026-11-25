@@ -60,7 +60,9 @@
 
 1. 点击按钮，确认 Windows 管理员提示。
 2. 之后全自动安装：用 VB-CABLE 安装程序自带的静默参数（`-i -h`），不弹它的窗口、不打开网站。通常不用重启。
-3. 程序识别到 `CABLE Input` / `CABLE Output` 后自动启用混音送声。在游戏或语音软件里把输入设备选为 **CABLE Output**。
+3. 程序识别到 `CABLE Input` / `CABLE Output` 后自动启用混音送声。若设备装上了但无法启动（常见于卸载后未重启就重装），程序会直接提示重启。
+
+旁边的「清除残留」用于以前装过但没卸载干净、导致装不上的情况：以管理员身份移除 VB-CABLE 的设备（含已断开的影子设备和音频端点）、驱动库里的驱动包、驱动服务、`C:\Program Files\VB\CABLE` 和它的卸载登记，以及本软件的临时文件。只按硬件 ID `VBAudioVACWDM` 和 `ROOT\JINKRAVAD` 识别，Voicemeeter 等其他 VB-Audio 产品不受影响。完成后重启电脑再安装。在游戏或语音软件里把输入设备选为 **CABLE Output**。
 
 虚拟声卡使用 VB-Audio 的 [VB-CABLE](https://vb-audio.com/Cable/)：它带微软签名，开着 Secure Boot 的 Windows 10/11 也能直接加载。打包时会把官方驱动包 `VBCABLE_Driver_Pack46.zip` 原样（校验 SHA-256，不做任何修改）嵌入 EXE，国内用户不需要再连 VB-Audio 官网下载。VB-CABLE 是捐赠软件，版权归 VB-Audio 所有。它的许可要求“未经作者同意，不得集成进其他软件的安装流程”，正式大规模分发前建议向 VB-Audio 取得书面许可。
 

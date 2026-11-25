@@ -21,7 +21,7 @@ from ctypes import wintypes as win
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 
 APP_NAME = "Jinkra Voiceover Roulette"
@@ -38,6 +38,92 @@ STATUS_EVERY = 5.0    # 等待期间多久查一次 VB-CABLE 设备状态
 VB_CABLE_HARDWARE_ID = "VBAudioVACWDM"
 REBOOT_MESSAGE = (f"虚拟麦克风已安装，但 Windows 需要重启后才能启用它（常见于刚卸载过、还没重启就重装）。"
                   f"请重启电脑后再打开 {APP_NAME}，无需重新安装。")
+
+
+# 「清除残留」以管理员身份运行的脚本。只处理 VB-CABLE（硬件 ID VBAudioVACWDM）和本软件
+# 自研驱动（ROOT\JINKRAVAD）的东西，Voicemeeter 等其他 VB-Audio 产品一律不碰。
+CLEANUP_SCRIPT = r"""
+param([string]$Log, [switch]$DryRun)
+$ErrorActionPreference = 'Continue'
+$removed = New-Object System.Collections.Generic.List[string]
+function Note($text) { $removed.Add($text) }
+$ids = @('VBAudioVACWDM', 'ROOT\JINKRAVAD')
+
+# 1. 能用 VB 官方卸载程序就先用它，让它清理自己的登记
+$vbSetup = Join-Path $env:ProgramFiles 'VB\CABLE\VBCABLE_Setup_x64.exe'
+if ((Test-Path $vbSetup) -and -not $DryRun) {
+    $p = Start-Process $vbSetup -ArgumentList '-u', '-h' -WindowStyle Hidden -PassThru
+    if (-not $p.WaitForExit(90000)) { try { $p.Kill() } catch {} }
+    Note 'VB-CABLE 官方卸载程序'
+}
+
+# 2. 设备：在用的、已断开只剩影子的都删
+foreach ($d in Get-PnpDevice -EA SilentlyContinue) {
+    $hw = @($d.HardwareID)
+    $match = ($ids | Where-Object { $hw -contains $_ }).Count -gt 0
+    $endpoint = $d.Class -eq 'AudioEndpoint' -and ($d.FriendlyName -like '*(VB-Audio Virtual Cable)*' -or
+                $d.FriendlyName -like '*Jinkra Virtual Mic*' -or $d.FriendlyName -like '*Jinkra Mix Input*')
+    if ($match -or $endpoint) {
+        if ($DryRun) { Note ('设备 ' + $d.FriendlyName); continue }
+        pnputil.exe /remove-device $d.InstanceId | Out-Null
+        if ($LASTEXITCODE -eq 0) { Note ('设备 ' + $d.FriendlyName) }
+    }
+}
+
+# 3. 驱动库里的驱动包（按 INF 内容识别，不依赖系统语言）
+foreach ($inf in Get-ChildItem (Join-Path $env:windir 'INF\oem*.inf') -EA SilentlyContinue) {
+    $text = Get-Content $inf.FullName -Raw -EA SilentlyContinue
+    if ($text -and ($text -match 'VBAudioVACWDM' -or $text -match 'ROOT\\JINKRAVAD')) {
+        if ($DryRun) { Note ('驱动包 ' + $inf.Name); continue }
+        pnputil.exe /delete-driver $inf.Name /uninstall /force | Out-Null
+        if ($LASTEXITCODE -eq 0) { Note ('驱动包 ' + $inf.Name) }
+    }
+}
+
+# 4. 驱动服务
+foreach ($svc in 'VBAudioVACMME', 'JinkraVad') {
+    if (Test-Path ('HKLM:\SYSTEM\CurrentControlSet\Services\' + $svc)) {
+        if (-not $DryRun) { sc.exe delete $svc | Out-Null }
+        Note ('驱动服务 ' + $svc)
+    }
+}
+
+# 5. VB-CABLE 的程序文件夹和卸载登记（只动 CABLE，不动 VB 下的其他产品）
+$folder = Join-Path $env:ProgramFiles 'VB\CABLE'
+if (Test-Path $folder) { if (-not $DryRun) { Remove-Item $folder -Recurse -Force -EA SilentlyContinue }; Note $folder }
+foreach ($root in 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+                  'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall') {
+    foreach ($key in Get-ChildItem $root -EA SilentlyContinue) {
+        $name = (Get-ItemProperty $key.PSPath -EA SilentlyContinue).DisplayName
+        if ($name -like 'VBCABLE*') { if (-not $DryRun) { Remove-Item $key.PSPath -Recurse -Force }; Note ('卸载登记 ' + $name) }
+    }
+}
+
+# 6. 本软件留下的临时文件
+foreach ($pattern in 'jinkra-vbcable-*', 'jinkra-uninstall-*', 'jinkra-driver-*') {
+    Get-ChildItem $env:TEMP -Directory -Filter $pattern -EA SilentlyContinue | ForEach-Object {
+        if (-not $DryRun) { Remove-Item $_.FullName -Recurse -Force -EA SilentlyContinue }
+        Note ('临时文件 ' + $_.Name)
+    }
+}
+Set-Content -Path $Log -Value $removed -Encoding UTF8
+"""
+
+
+def _start_cleanup(owner):
+    """以管理员身份运行清理脚本，返回 (进程, 日志路径, 临时目录)。"""
+    stage = Path(tempfile.mkdtemp(prefix="jinkra-cleanup-"))
+    script = stage / "cleanup.ps1"
+    script.write_text(CLEANUP_SCRIPT, encoding="utf-8-sig")
+    log = stage / "cleanup.log"
+    powershell = Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+    arguments = subprocess.list2cmdline(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                                         "-File", str(script), "-Log", str(log)])
+    try:
+        return _run_elevated(powershell, arguments, owner, 0), log, stage
+    except Exception:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
 
 
 def _cable_status():
@@ -198,6 +284,7 @@ class DriverInstallation(QObject):
         self._status = None
         self._status_at = 0.0
         self._latest_status = None
+        self._cleanup_log = None
         self._owner = None
         self._stage = None
         self.timer = QTimer(self, interval=350)
@@ -277,6 +364,39 @@ class DriverInstallation(QObject):
         self.process = _start_vb_cable(setup, int(self._owner.winId()) if self._owner else 0)
         self.message = "正在自动安装虚拟麦克风，约需十几秒，请稍候。"
 
+    # ---- 清除残留 ----
+    def cleanup(self, parent):
+        """清掉 VB-CABLE 和自研驱动在系统里的残留，完成后需重启。"""
+        if self.busy():
+            return
+        self._owner = parent
+        try:
+            self.process, self._cleanup_log, self._stage = _start_cleanup(
+                int(parent.winId()) if parent is not None else 0)
+        except OSError as error:
+            self._fail(str(error))
+            return
+        self.message = "正在清除虚拟麦克风残留，请稍候…"
+        self.timer.start()
+        self.changed.emit()
+
+    def cleaning_from(self, parent):
+        return self._cleanup_log is not None and self._owner is parent
+
+    def _cleanup_done(self):
+        log, self._cleanup_log = self._cleanup_log, None
+        try:
+            items = [line.strip() for line in log.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+        except OSError:
+            items = None
+        if items is None:
+            message = "清理没有完成，请重试并在 Windows 管理员提示中选择「是」。"
+        elif items:
+            message = (f"已清除 {len(items)} 项残留。请重启电脑，然后再点「安装虚拟麦克风」。")
+        else:
+            message = "没有发现残留，可以直接点「安装虚拟麦克风」。"
+        self._finish(False, message)
+
     def _poll(self):
         try:
             if self._download is not None:
@@ -289,6 +409,11 @@ class DriverInstallation(QObject):
             if self.process is not None:
                 result = self.process.result()
                 if result is None:
+                    return
+                if self._cleanup_log is not None:
+                    self.process.close()
+                    self.process = None
+                    self._cleanup_done()
                     return
                 jinkra = self._uses_jinkra()
                 self.process.close()
@@ -372,8 +497,24 @@ class DriverInstallation(QObject):
         self._status = None
         self._status_at = 0.0
         self._latest_status = None
+        self._cleanup_log = None
         self._owner = None
         self._clean_stage()
+
+
+CLEANUP_TIP = "以前装过虚拟麦克风但没卸载干净、导致装不上时使用。清除后需重启电脑。"
+
+
+def confirm_cleanup(parent) -> bool:
+    answer = QMessageBox.question(
+        parent, "清除虚拟麦克风残留",
+        "将移除这台电脑上的 VB-CABLE 虚拟麦克风及其残留：设备、驱动包、驱动服务和安装文件夹。\n\n"
+        "适用于以前装过但没卸载干净、导致现在装不上的情况。需要确认 Windows 管理员提示，"
+        "完成后请重启电脑，再点「安装虚拟麦克风」。\n\n"
+        "其他软件如果也在用 VB-CABLE，会一起失去这个设备。Voicemeeter 等其他 VB-Audio 软件不受影响。\n\n"
+        "确定清除吗？",
+        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+    return answer == QMessageBox.Yes
 
 
 def for_application(directory, resources, route_ready=None):

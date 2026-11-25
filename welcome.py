@@ -291,7 +291,11 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
         self.driver_installation.installed.connect(self._driver_installed)
         self.btn_refresh = QPushButton("重新检测")
         self.btn_refresh.clicked.connect(self._refresh_audio)
+        self.btn_cleanup = QPushButton("清除残留")
+        self.btn_cleanup.setToolTip(driver_setup.CLEANUP_TIP)
+        self.btn_cleanup.clicked.connect(self._cleanup)
         actions.addWidget(self.btn_install)
+        actions.addWidget(self.btn_cleanup)
         actions.addWidget(self.btn_refresh)
         actions.addStretch()
         mic.insertLayout(7, actions)
@@ -499,7 +503,10 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
         installing = self.driver_installation.installing_from(self)
         self.enable_mic.setEnabled(ready or self.enable_mic.isChecked())
         self.btn_install.setEnabled(not ready and self.driver_installation.can_install())
-        self.btn_install.setText("正在安装…" if installing else
+        cleaning = self.driver_installation.cleaning_from(self)
+        self.btn_cleanup.setEnabled(not self.driver_installation.busy())
+        self.btn_cleanup.setText("正在清除…" if cleaning else "清除残留")
+        self.btn_install.setText("正在安装…" if installing and not cleaning else
                                  "虚拟麦克风已就绪" if ready else "安装虚拟麦克风")
         if self.pages.currentIndex() == 2:
             self.next.setEnabled(not installing)
@@ -511,6 +518,10 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
 
     def _install(self):
         self.driver_installation.install(self)
+
+    def _cleanup(self):
+        if driver_setup.confirm_cleanup(self):
+            self.driver_installation.cleanup(self)
 
     def _driver_installed(self, owner):
         if owner is self and self.isVisible():

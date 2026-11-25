@@ -3847,6 +3847,10 @@ class MicPage(QWidget):
         self.driver_installation.changed.connect(self._refresh_status)
         self.driver_installation.installed.connect(self._driver_installed)
         row.addWidget(self.btn_install)
+        self.btn_cleanup = QPushButton("清除残留")
+        self.btn_cleanup.setToolTip(driver_setup.CLEANUP_TIP)
+        self.btn_cleanup.clicked.connect(self._cleanup_driver)
+        row.addWidget(self.btn_cleanup)
         self.btn_copy = QPushButton("复制设备名")
         self.btn_copy.clicked.connect(self._copy_name)
         row.addWidget(self.btn_copy)
@@ -3970,6 +3974,10 @@ class MicPage(QWidget):
     def _install_driver(self) -> None:
         self.driver_installation.install(self)
 
+    def _cleanup_driver(self) -> None:
+        if driver_setup.confirm_cleanup(self):
+            self.driver_installation.cleanup(self)
+
     def _driver_installed(self, owner) -> None:
         if owner is self:
             if self.chk_enable.isChecked():
@@ -4007,7 +4015,10 @@ class MicPage(QWidget):
         self.chk_enable.setEnabled(ready or enabled)
         self.btn_copy.setEnabled(ready)
         self.btn_install.setEnabled(not ready and self.driver_installation.can_install())
-        self.btn_install.setText("正在安装…" if self.driver_installation.installing_from(self) else
+        self.btn_cleanup.setEnabled(not self.driver_installation.busy())
+        self.btn_cleanup.setText("正在清除…" if self.driver_installation.cleaning_from(self) else "清除残留")
+        self.btn_install.setText("正在安装…" if self.driver_installation.installing_from(self)
+                                 and not self.driver_installation.cleaning_from(self) else
                                  "虚拟麦克风已就绪" if ready else "安装虚拟麦克风")
         if not ready:
             lines = [missing, self.driver_installation.hint()]

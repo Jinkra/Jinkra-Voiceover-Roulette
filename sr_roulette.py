@@ -1322,7 +1322,7 @@ def voice_mic_name(output=None) -> str:
     if output is None:
         output = guess_virtual_output()
     route = route_of(output.description()) if output is not None else None
-    return (route or JINKRA).capture
+    return (route or VB_CABLE).capture  # 还没装时按默认安装的 VB-CABLE 提示
 
 
 def _route_pair(route):

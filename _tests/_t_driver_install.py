@@ -213,6 +213,42 @@ class DriverInstallTests(unittest.TestCase):
         self.installation._poll()
         self.assertIn("已自动启用送声", self.installation.hint())
 
+    def test_cleanup_reports_removed_items_and_asks_for_restart(self):
+        page = MicPage(self.cfg, None)
+        self.addCleanup(page.close)
+        stage = self.base / "cleanup"
+        stage.mkdir()
+        log = stage / "cleanup.log"
+        process = Mock()
+        process.result.side_effect = [None, 0]
+        with patch.object(driver_setup, "confirm_cleanup", return_value=True), \
+             patch.object(driver_setup, "_start_cleanup", return_value=(process, log, stage)):
+            page.btn_cleanup.click()
+        self.assertEqual(page.btn_cleanup.text(), "正在清除…")
+        self.assertFalse(page.btn_install.isEnabled())
+        self.installation._poll()
+        log.write_text("驱动包 oem198.inf\n驱动服务 VBAudioVACMME\n", encoding="utf-8")
+        self.installation._poll()
+        self.assertIn("已清除 2 项残留", page.lbl_status.text())
+        self.assertIn("重启电脑", page.lbl_status.text())
+        self.assertFalse(stage.exists())
+        self.assertFalse(self.cfg["mic_enabled"])
+        self.assertEqual(page.btn_cleanup.text(), "清除残留")
+
+    def test_cleanup_cancelled_by_user_does_nothing(self):
+        page = MicPage(self.cfg, None)
+        self.addCleanup(page.close)
+        with patch.object(driver_setup, "confirm_cleanup", return_value=False), \
+             patch.object(driver_setup, "_start_cleanup") as start:
+            page.btn_cleanup.click()
+        start.assert_not_called()
+
+    def test_cleanup_script_spares_other_vb_audio_products(self):
+        script = driver_setup.CLEANUP_SCRIPT
+        self.assertIn("VBAudioVACWDM", script)
+        self.assertNotIn("Voicemeeter", script)
+        self.assertIn("'VB\\CABLE'", script)
+
     def test_tampered_bundle_falls_back_to_official_download(self):
         pack = self.make_pack(self.resources)
         good = pack.read_bytes()
