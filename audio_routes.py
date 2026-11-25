@@ -30,8 +30,23 @@ class Route:
         return self._has(description, self.capture)
 
 
+class DriverRoute(Route):
+    """按驱动名识别端点：端点名会被 Windows 本地化或被用户改名，驱动名不会。
+
+    例如 VB-CABLE 静默安装后，中文 Windows 把播放端叫「扬声器 (VB-Audio Virtual Cable)」，
+    而不是 VB 安装窗口会改成的 CABLE Input。只排除 16 声道的那一路。
+    """
+
+    def _has(self, description, name):
+        labels = _labels(description)
+        if self.qualifier.casefold() not in labels:
+            return False
+        compact = (description or "").casefold().replace(" ", "")
+        return "16ch" not in compact
+
+
 JINKRA = Route(MIX_ENDPOINT, MIC_ENDPOINT)
-VB_CABLE = Route("CABLE Input", "CABLE Output", "VB-Audio Virtual Cable")
+VB_CABLE = DriverRoute("CABLE Input", "CABLE Output", "VB-Audio Virtual Cable")
 ROUTES = (JINKRA, VB_CABLE)
 
 

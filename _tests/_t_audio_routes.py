@@ -52,6 +52,19 @@ def main() -> None:
          patch.object(sr, "all_inputs", return_value=[mic, cable_in]):
         assert sr.guess_virtual_output() is render  # 自带驱动优先
         assert sr.voice_mic_name() == "Jinkra Virtual Mic"
+    # 中文 Windows 静默安装后的真实端点名（播放端叫「扬声器」）
+    zh_out = device("扬声器 (VB-Audio Virtual Cable)")
+    with patch.object(sr.QMediaDevices, "audioOutputs",
+                      return_value=[device("耳机 (ROG PELTA (2.4GHz))"), device("扬声器 (Realtek(R) Audio)"),
+                                    zh_out, device("CABLE In 16 Ch (VB-Audio Virtual Cable)")]), \
+         patch.object(sr, "all_inputs", return_value=[device("耳机式麦克风 (ROG PELTA (2.4GHz))"), cable_in,
+                                                       device("麦克风阵列 (Realtek(R) Audio)")]):
+        assert sr.virtual_outputs() == [zh_out], sr.virtual_outputs()
+        assert sr.virtual_route_status() == (zh_out, "")
+        assert sr.voice_input_for(zh_out.description()) is cable_in
+        assert sr.voice_mic_name(zh_out) == "CABLE Output"
+    assert not sr.VB_CABLE.render_matches("扬声器 (Realtek(R) Audio)")
+    assert not sr.VB_CABLE.render_matches("Voicemeeter Input (VB-Audio Voicemeeter VAIO)")
     with patch.object(sr, "virtual_outputs", return_value=[cable_out]), \
          patch.object(sr, "all_inputs", return_value=[]):
         assert "VB-CABLE" in sr.virtual_route_status()[1]
