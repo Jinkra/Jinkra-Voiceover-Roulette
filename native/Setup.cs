@@ -207,9 +207,12 @@ internal sealed class RouletteSetup : Form {
     protected override void OnPaint(PaintEventArgs e) {
         base.OnPaint(e);
         Graphics g = e.Graphics;
+        // 先关着抗锯齿铺满左栏：开着时整数坐标的矩形边缘只覆盖半个像素，
+        // 窗口最左一列和最上一行会和浅色底混成一条灰白线。
+        g.SmoothingMode = SmoothingMode.None;
+        using (var rail = new SolidBrush(Rail)) g.FillRectangle(rail, 0, 0, BrandWidth, Height);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        using (var rail = new SolidBrush(Rail)) g.FillRectangle(rail, 0, 0, BrandWidth, Height);
         // 轮盘刻度：与应用里带刻度的轮盘呼应
         using (var ring = new Pen(Color.FromArgb(70, 171, 201, 188), 1))
         using (var tick = new Pen(Color.FromArgb(110, 171, 201, 188), 2)) {
@@ -225,7 +228,7 @@ internal sealed class RouletteSetup : Form {
                                  center.X + (float)Math.Cos(a) * r2, center.Y + (float)Math.Sin(a) * r2);
             }
         }
-        g.DrawImage(logo, new RectangleF((BrandWidth - 150) / 2f, 132, 150, 150));
+        DrawRoundLogo(g, new RectangleF((BrandWidth - 150) / 2f, 132, 150, 150));
         using (var light = new SolidBrush(Linen))
         using (var subtle = new SolidBrush(RailMuted))
         using (var display = new Font("Segoe UI", 21, FontStyle.Bold))
@@ -244,6 +247,30 @@ internal sealed class RouletteSetup : Form {
             g.FillPath(white, input);
             g.DrawPath(border, input);
         }
+    }
+
+    private Bitmap roundLogo;
+
+    // LOGO 原图是方形深蓝底上的圆形徽章，只取圆形部分（向内收一点，去掉外圈底色），边缘抗锯齿。
+    private void DrawRoundLogo(Graphics g, RectangleF bounds) {
+        if (roundLogo == null) {
+            roundLogo = new Bitmap((int)bounds.Width, (int)bounds.Height);
+            using (Graphics scaled = Graphics.FromImage(roundLogo)) {
+                scaled.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                scaled.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                scaled.DrawImage(logo, new Rectangle(0, 0, roundLogo.Width, roundLogo.Height));
+            }
+        }
+        float inset = bounds.Width * 0.03f;
+        using (var brush = new TextureBrush(roundLogo, WrapMode.Clamp)) {
+            brush.TranslateTransform(bounds.X, bounds.Y);
+            g.FillEllipse(brush, bounds.X + inset, bounds.Y + inset, bounds.Width - inset * 2, bounds.Height - inset * 2);
+        }
+    }
+
+    protected override void Dispose(bool disposing) {
+        if (disposing && roundLogo != null) { roundLogo.Dispose(); roundLogo = null; }
+        base.Dispose(disposing);
     }
 
     private void SetStatus(string message, bool error) {
