@@ -34,6 +34,22 @@ VB_CABLE_SHA256 = "bc44e8974191a5a2427d6c979e2dab08dbb09925f3f435dfa2f0ba3e45b6e
 VB_CABLE_SETUP = "VBCABLE_Setup_x64.exe"
 VB_CABLE_MAX = 16 * 1024 * 1024
 ENDPOINT_WAIT = 25.0  # 安装程序退出后，等 Windows 枚举出端点的最长秒数
+STATUS_EVERY = 5.0    # 等待期间多久查一次 VB-CABLE 设备状态
+VB_CABLE_HARDWARE_ID = "VBAudioVACWDM"
+REBOOT_MESSAGE = (f"虚拟麦克风已安装，但 Windows 需要重启后才能启用它（常见于刚卸载过、还没重启就重装）。"
+                  f"请重启电脑后再打开 {APP_NAME}，无需重新安装。")
+
+
+def _cable_status():
+    """VB-CABLE 设备在设备管理器里的状态集合，例如 {"OK"}、{"Error"}；没装时为空集合。"""
+    if sys.platform != "win32":
+        return set()
+    script = ("(Get-PnpDevice -PresentOnly -Class MEDIA | Where-Object { $_.HardwareID -contains '"
+              + VB_CABLE_HARDWARE_ID + "' }).Status")
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                            capture_output=True, text=True, timeout=30,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
 def _helper(directory, resources):
@@ -179,6 +195,9 @@ class DriverInstallation(QObject):
         self._download = None
         self._executor = None
         self._waiting_since = None
+        self._status = None
+        self._status_at = 0.0
+        self._latest_status = None
         self._owner = None
         self._stage = None
         self.timer = QTimer(self, interval=350)
@@ -289,11 +308,36 @@ class DriverInstallation(QObject):
             if self._waiting_since is not None:
                 if self.route_ready():
                     self._finish(True, "虚拟麦克风已安装，已自动启用送声。")
+                    return
+                status = self._check_status()
+                if status is not None and "Error" in status:
+                    # 设备已装上但启动失败（设备管理器代码 10），只有重启能解决，不必再等。
+                    self._finish(False, REBOOT_MESSAGE)
                 elif time.monotonic() - self._waiting_since > ENDPOINT_WAIT:
-                    self._finish(False, "安装窗口已关闭，但 Windows 还没有出现虚拟麦克风。"
-                                        f"请重启电脑后再打开 {APP_NAME}；仍然没有的话再点一次安装。")
+                    if status:
+                        self._finish(False, REBOOT_MESSAGE)
+                    else:
+                        self._finish(False, "虚拟麦克风没有装上。请再点一次「安装虚拟麦克风」，"
+                                            "并在 Windows 管理员提示中选择「是」。")
         except Exception as error:  # 下载、解压或读取进程状态失败
             self._fail(str(error) or "虚拟麦克风安装失败，请重试。")
+
+    def _check_status(self):
+        """在后台线程里查询设备状态，避免卡住界面。返回最近一次结果，还没有结果时返回 None。"""
+        if self._status is not None and self._status.done():
+            try:
+                latest = self._status.result()
+            except Exception:
+                latest = set()
+            self._status = None
+            self._latest_status = latest
+            return latest
+        if self._status is None and time.monotonic() - self._status_at >= STATUS_EVERY:
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(max_workers=1)
+            self._status_at = time.monotonic()
+            self._status = self._executor.submit(_cable_status)
+        return self._latest_status
 
     def _finish(self, success, message):
         owner = self._owner
@@ -325,6 +369,9 @@ class DriverInstallation(QObject):
             self._executor.shutdown(wait=False)
             self._executor = None
         self._waiting_since = None
+        self._status = None
+        self._status_at = 0.0
+        self._latest_status = None
         self._owner = None
         self._clean_stage()
 

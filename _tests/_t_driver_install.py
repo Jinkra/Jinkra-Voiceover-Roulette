@@ -40,6 +40,8 @@ class DriverInstallTests(unittest.TestCase):
         self.enterContext(patch.object(sr, "real_inputs", return_value=[]))
         self.enterContext(patch.object(sr, "virtual_route_status", return_value=(None, "等待端点")))
         self.save_config = self.enterContext(patch.object(sr, "save_config"))
+        self.cable_status = set()
+        self.enterContext(patch.object(driver_setup, "_cable_status", lambda: set(self.cable_status)))
         self.cfg = dict(sr.DEFAULT_CONFIG, animations=False, mic_enabled=False)
 
     def stage_fixture(self):
@@ -163,9 +165,53 @@ class DriverInstallTests(unittest.TestCase):
         self.installation._poll()
         with patch.object(driver_setup.time, "monotonic", return_value=1e12):
             self.installation._poll()
-        self.assertIn("重启电脑", self.installation.hint())
-        self.assertIn("Jinkra Voiceover Roulette", self.installation.hint())
+        self.assertIn("没有装上", self.installation.hint())
         self.assertTrue(self.installation.can_install())
+
+    def wait_for_status(self):
+        future = self.installation._status
+        if future is not None:
+            future.result(timeout=5)
+        self.installation._poll()
+
+    def test_device_failed_to_start_asks_for_restart_without_waiting(self):
+        self.make_pack(self.resources)
+        self.cable_status = {"Error"}
+        process = Mock()
+        process.result.return_value = 0
+        with patch.object(driver_setup, "_start_vb_cable", return_value=process):
+            self.installation.install(None)
+        self.installation._poll()          # 安装程序结束，开始查设备状态
+        self.wait_for_status()
+        self.assertIn("需要重启", self.installation.hint())
+        self.assertIn("无需重新安装", self.installation.hint())
+        self.assertTrue(self.installation.can_install())
+
+    def test_no_device_after_timeout_asks_to_retry(self):
+        self.make_pack(self.resources)
+        process = Mock()
+        process.result.return_value = 0
+        with patch.object(driver_setup, "_start_vb_cable", return_value=process):
+            self.installation.install(None)
+        self.installation._poll()
+        self.wait_for_status()
+        with patch.object(driver_setup.time, "monotonic", return_value=1e12):
+            self.installation._poll()
+        self.assertIn("没有装上", self.installation.hint())
+
+    def test_working_device_still_waits_for_endpoints(self):
+        self.make_pack(self.resources)
+        self.cable_status = {"OK"}
+        process = Mock()
+        process.result.return_value = 0
+        with patch.object(driver_setup, "_start_vb_cable", return_value=process):
+            self.installation.install(None)
+        self.installation._poll()
+        self.wait_for_status()
+        self.assertTrue(self.installation.busy())
+        self.ready = True
+        self.installation._poll()
+        self.assertIn("已自动启用送声", self.installation.hint())
 
     def test_tampered_bundle_falls_back_to_official_download(self):
         pack = self.make_pack(self.resources)
