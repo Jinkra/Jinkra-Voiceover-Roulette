@@ -2,11 +2,11 @@
 
 import time
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
+from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout,
-    QLabel, QLineEdit, QListView, QProgressBar, QPushButton, QSplashScreen, QStackedWidget,
+    QLabel, QLineEdit, QListView, QProgressBar, QPushButton, QSizeGrip, QSplashScreen, QStackedWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -60,6 +60,81 @@ def splash(icon, version, animated=True):
     return screen
 
 
+class _GuideTitleBar(QFrame):
+    def __init__(self, window):
+        super().__init__(window)
+        self.setObjectName("GuideTitleBar")
+        self.setFixedHeight(51)
+        self.drag_offset = None
+        row = QHBoxLayout(self)
+        row.setContentsMargins(19, 0, 12, 0)
+        row.setSpacing(9)
+        logo = QLabel()
+        logo.setPixmap(window.windowIcon().pixmap(24, 24))
+        logo.setAttribute(Qt.WA_TransparentForMouseEvents)
+        row.addWidget(logo)
+        title = QLabel(window.windowTitle())
+        title.setObjectName("GuideAppName")
+        title.setAttribute(Qt.WA_TransparentForMouseEvents)
+        row.addWidget(title)
+        row.addStretch()
+
+        mark = QPixmap(28, 28)
+        mark.setDevicePixelRatio(2)
+        mark.fill(Qt.transparent)
+        painter = QPainter(mark)
+        painter.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor("#39525b"), 1.25)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(3.5, 3.5), QPointF(10.5, 10.5))
+        painter.drawLine(QPointF(10.5, 3.5), QPointF(3.5, 10.5))
+        painter.end()
+        self.close_button = QPushButton(QIcon(mark), "")
+        self.close_button.setObjectName("GuideClose")
+        self.close_button.setFixedSize(32, 32)
+        self.close_button.setAutoDefault(False)
+        self.close_button.setAccessibleName("关闭窗口")
+        self.close_button.setToolTip("关闭窗口")
+        self.close_button.clicked.connect(window.reject)
+        row.addWidget(self.close_button)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            window = self.window()
+            handle = window.windowHandle()
+            if handle is None or not handle.startSystemMove():
+                self.drag_offset = event.globalPosition().toPoint() - window.pos()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.drag_offset is not None and event.buttons() & Qt.LeftButton:
+            self.window().move(event.globalPosition().toPoint() - self.drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.drag_offset = None
+        super().mouseReleaseEvent(event)
+
+
+class _ScanPanel(QWidget):
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        panel = QPainterPath()
+        panel.addRoundedRect(QRectF(self.rect()).adjusted(0, -13, 13, 0), 11, 11)
+        painter.fillPath(panel, QColor("#123b46"))
+        painter.setClipPath(panel)
+        center = QPointF(self.width() * 0.16, self.height() + 19)
+        painter.setPen(QPen(QColor("#285662"), 1))
+        for radius in (88, 101, 117, 132, 155, 179, 204, 230):
+            painter.drawEllipse(center, radius, radius)
+
+
 class SetupGuide(QDialog):
     def __init__(self, service, activation, cfg, parent=None):
         super().__init__(parent)
@@ -73,39 +148,58 @@ class SetupGuide(QDialog):
         self.locked_until = 0.0
         self.retry_timer = QTimer(self, interval=250)
         self.retry_timer.timeout.connect(self._retry_status)
-        self.setWindowTitle("Jinkra · 使用向导")
+        self.setWindowFlag(Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowTitle(service.APP_NAME)
         self.setWindowIcon(service.make_icon())
         self.resize(780, 535)
         self.setMinimumSize(690, 475)
         self.setStyleSheet("""
-QDialog { background: #f4f4ec; color: #252f29; font-family: "Microsoft YaHei UI"; }
+QWidget { font-family: "Microsoft YaHei UI"; }
+QFrame#GuideSurface { background: #f8fbfb; border: 1px solid #b5c8cd; border-radius: 12px; }
+QFrame#GuideTitleBar { border-bottom: 1px solid #d9e5e7; }
+QLabel#GuideAppName { color: #193941; font-family: "Segoe UI"; font-size: 14px; font-weight: 700; }
 QFrame#GuideRail { background: #242a26; border-radius: 12px; }
 QLabel { color: #304137; font-size: 13px; }
 QLabel#RailBrand { color: #f1f2e9; font-size: 19px; font-weight: 700; }
 QLabel#Step { color: #b9d5c6; font-size: 13px; }
 QLabel#Title { color: #222c25; font-size: 27px; font-weight: 700; }
 QLabel#GuideNote { color: #326456; font-size: 12px; }
-QLabel#ActivationBrand { color: #233832; font-size: 14px; font-weight: 700; }
-QLabel#ActivationTitle { color: #172e27; font-size: 32px; font-weight: 700; }
-QLabel#ActivationMuted { color: #52685f; font-size: 13px; }
-QLabel#ActivationLabel { color: #253d33; font-size: 13px; font-weight: 700; }
-QLabel#ActivationAccount { color: #1b3b2e; font-size: 20px; font-weight: 700; }
-QLabel#ActivationFeedback { color: #93452e; font-size: 12px; }
-QFrame#ActivationCard { background: #e9f2ed; border: 1px solid #d6e5db; border-radius: 16px; }
-QFrame#ActivationDivider { background: #dce5db; }
+QLabel#ScanTitle { color: #f2fafb; font-size: 23px; font-weight: 700; }
+QLabel#ScanAccount { color: #c2dde0; font-size: 14px; }
+QLabel#ScanHint { color: #cee5e5; font-size: 12px; }
+QLabel#ScanCode { background: #ffffff; color: #193941; border-radius: 12px; }
+QLabel#ActivationTitle { color: #173640; font-size: 36px; font-weight: 700; }
+QLabel#ActivationMuted { color: #48646c; font-size: 14px; }
+QLabel#ActivationLabel { color: #284750; font-size: 13px; font-weight: 700; }
+QLabel#ActivationFeedback { color: #963d36; font-size: 13px; }
 QPushButton, QLineEdit, QComboBox { min-height: 26px; background: #ffffff; border: 1px solid #cbd4c8;
     border-radius: 7px; padding: 5px 12px; font-size: 13px; color: #29362d; }
 QPushButton:hover, QLineEdit:focus, QComboBox:focus { border-color: #52907c; background: #f2f8ef; }
 QPushButton:pressed { background: #cde4d6; }
 QPushButton#Next { background: #316d5c; color: #ffffff; border-color: #316d5c; font-weight: 700; }
 QPushButton#Next:hover { background: #285a4c; }
-QLineEdit#ActivationCode, QPushButton#Activate { min-height: 32px; border-radius: 9px; }
-QPushButton#Activate { background: #205e49; border-color: #205e49; color: #ffffff; font-weight: 700; }
-QPushButton#Activate:hover { background: #194d3c; }
-QPushButton#Activate:pressed { background: #123b2d; }
-QPushButton#Activate:focus { border-color: #78b69a; }
-QPushButton#Activate:disabled { color: #526b61; background: #e2ebe4; border-color: #d8e4dc; }
 QPushButton:disabled { color: #859087; background: #e8ebe3; border-color: #d8dfd5; }
+QPushButton#GuideClose { background: transparent; border: 1px solid transparent; border-radius: 7px;
+    padding: 0; min-height: 0; }
+QPushButton#GuideClose:hover { background: #f5e3e3; }
+QPushButton#GuideClose:pressed { background: #efd0d0; }
+QPushButton#GuideClose:focus { border-color: #6c9da2; }
+QLineEdit#ActivationCode { background: #ffffff; border: 1px solid #b9cdd0;
+    border-radius: 8px; padding: 0 13px; min-height: 44px; font-size: 14px;
+    color: #193941; placeholder-text-color: #59727a; }
+QLineEdit#ActivationCode:focus { border: 1px solid #177e80; background: #ffffff; }
+QPushButton#PasteCode { background: #eaf3f3; border-color: #c2d5d7; color: #27565e;
+    border-radius: 8px; padding: 0 13px; min-height: 44px; font-weight: 700; }
+QPushButton#PasteCode:hover { background: #dbecea; }
+QPushButton#PasteCode:pressed { background: #c7e0de; }
+QPushButton#PasteCode:focus { border-color: #177e80; }
+QPushButton#Activate { background: #176961; border-color: #176961; color: #ffffff;
+    border-radius: 8px; padding: 0 14px; min-height: 46px; font-size: 14px; font-weight: 700; }
+QPushButton#Activate:hover { background: #115a55; }
+QPushButton#Activate:pressed { background: #0b4744; }
+QPushButton#Activate:focus { border-color: #80c6ba; }
+QPushButton#Activate:disabled { color: #4b686d; background: #e4edef; border-color: #d7e4e7; }
 QComboBox#GuideMic { combobox-popup: 0; }
 QComboBox#GuideMic:disabled { color: #576b60; background: #e9ede6; }
 QListView#GuideMicOptions { color: #223b30; background: #ffffff; outline: 0;
@@ -117,9 +211,19 @@ QListView#GuideMicOptions::item:selected { background: #dceee3; color: #133d2b; 
 QProgressBar { background: #49574f; border: none; border-radius: 2px; }
 QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
 """)
-        outer = QHBoxLayout(self)
-        outer.setContentsMargins(15, 15, 15, 15)
+        frame_layout = QVBoxLayout(self)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        surface = QFrame()
+        surface.setObjectName("GuideSurface")
+        frame_layout.addWidget(surface)
+        frame = QVBoxLayout(surface)
+        frame.setContentsMargins(1, 1, 1, 1)
+        frame.setSpacing(0)
+        self.title_bar = _GuideTitleBar(self)
+        frame.addWidget(self.title_bar)
+        outer = self.body = QHBoxLayout()
         outer.setSpacing(23)
+        frame.addLayout(outer, 1)
         rail = self.rail = QFrame()
         rail.setObjectName("GuideRail")
         rail.setFixedWidth(172)
@@ -144,8 +248,7 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
         layout.addStretch()
         outer.addWidget(rail)
 
-        right = QVBoxLayout()
-        right.setContentsMargins(0, 8, 7, 5)
+        right = self.guide_content = QVBoxLayout()
         right.setSpacing(14)
         outer.addLayout(right, 1)
         self.pages = QStackedWidget()
@@ -208,77 +311,85 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
         footer.addWidget(self.skip)
         footer.addWidget(self.next)
         right.addWidget(self.footer)
+        self.grip = QSizeGrip(self)
+        self.grip.resize(17, 17)
+        self.grip.setToolTip("拖动调整窗口大小")
         self.detect_timer = QTimer(self, interval=1800)
         self.detect_timer.timeout.connect(self._refresh_audio)
         self._show(1 if self.unlocked else 0)
 
     def _activation_page(self):
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 12, 24, 20)
-        layout.setSpacing(18)
+        layout = QHBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._scan_panel(), 4)
 
-        brand = QHBoxLayout()
-        brand.setSpacing(10)
-        logo = QLabel()
-        logo.setPixmap(self.windowIcon().pixmap(34, 34))
-        brand.addWidget(logo)
-        name = QLabel("Jinkra Voiceover Roulette")
-        name.setObjectName("ActivationBrand")
-        brand.addWidget(name)
-        brand.addStretch()
-        layout.addLayout(brand)
-        divider = QFrame()
-        divider.setObjectName("ActivationDivider")
-        divider.setFixedHeight(1)
-        layout.addWidget(divider)
-
-        body = QHBoxLayout()
-        body.setSpacing(36)
-        form = QVBoxLayout()
-        form.setSpacing(10)
-        form.addStretch(2)
-        form.addWidget(self._text("激活音效轮盘", style="ActivationTitle"))
-        form.addWidget(self._text("用微信扫码获取激活码，然后在这里输入。", style="ActivationMuted"))
-        form.addSpacing(12)
+        form_area = QWidget()
+        columns = QHBoxLayout(form_area)
+        columns.setContentsMargins(37, 20, 37, 20)
+        fields = QWidget()
+        fields.setMaximumWidth(420)
+        columns.addWidget(fields, 1)
+        form = QVBoxLayout(fields)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(9)
+        form.addStretch()
+        form.addWidget(self._text("软件激活", style="ActivationTitle"))
+        form.addWidget(self._text("输入从微信公众号获取的激活码。", style="ActivationMuted"))
+        form.addSpacing(20)
         self.code = QLineEdit()
         self.code.setObjectName("ActivationCode")
         self.code.setEchoMode(QLineEdit.Password)
         self.code.setMaxLength(128)
-        self.code.setPlaceholderText("粘贴激活码")
+        self.code.setPlaceholderText("在此输入激活码")
         self.code.setAccessibleName("激活码")
         self.code.returnPressed.connect(self._advance)
         code_label = self._text("激活码", style="ActivationLabel")
         code_label.setBuddy(self.code)
         form.addWidget(code_label)
-        form.addWidget(self.code)
+        entry = QHBoxLayout()
+        entry.setSpacing(8)
+        entry.addWidget(self.code, 1)
+        self.paste_button = QPushButton("粘贴")
+        self.paste_button.setObjectName("PasteCode")
+        self.paste_button.setAutoDefault(False)
+        self.paste_button.setCursor(Qt.PointingHandCursor)
+        self.paste_button.clicked.connect(self._paste_code)
+        entry.addWidget(self.paste_button)
+        form.addLayout(entry)
+        form.addSpacing(4)
         self.activate_button = QPushButton("激活" if self.activation_only else "激活并继续")
         self.activate_button.setObjectName("Activate")
+        self.activate_button.setCursor(Qt.PointingHandCursor)
         self.activate_button.setEnabled(False)
         self.activate_button.clicked.connect(self._advance)
         self.code.textChanged.connect(self._update_activate_button)
         form.addWidget(self.activate_button)
         self.activation_message = self._text("", style="ActivationFeedback")
-        self.activation_message.setMinimumHeight(36)
+        self.activation_message.setMinimumHeight(37)
         self.activation_message.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         form.addWidget(self.activation_message)
-        form.addStretch(2)
-        body.addLayout(form, 1)
+        form.addStretch()
+        layout.addWidget(form_area, 6)
+        return page
 
-        card = QFrame()
-        card.setObjectName("ActivationCard")
-        card.setMinimumWidth(220)
-        card.setMaximumWidth(258)
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(22, 20, 22, 19)
-        card_layout.setSpacing(7)
-        channel = self._text("微信公众号", style="ActivationMuted")
-        channel.setAlignment(Qt.AlignCenter)
-        card_layout.addWidget(channel)
-        account = self._text("都拓文化", style="ActivationAccount")
+    def _scan_panel(self):
+        panel = _ScanPanel()
+        panel.setMinimumWidth(235)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(8)
+        layout.addStretch()
+        title = self._text("微信扫码", style="ScanTitle")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+        account = self._text("公众号 · 都拓文化", style="ScanAccount")
         account.setAlignment(Qt.AlignCenter)
-        card_layout.addWidget(account)
+        layout.addWidget(account)
         qr = QLabel()
+        qr.setObjectName("ScanCode")
+        qr.setFixedSize(182, 182)
         qr.setAccessibleName("都拓文化微信公众号二维码")
         qr.setAlignment(Qt.AlignCenter)
         poster = QPixmap(str(self.service.RESOURCE_DIR / "wechat-promotion.png"))
@@ -287,15 +398,24 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
         else:
             # 原图二维码四周的留白要一起保留，方便扫码。
             qr.setPixmap(poster.copy(73, 73, 460, 460).scaled(
-                158, 158, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        card_layout.addSpacing(4)
-        card_layout.addWidget(qr)
-        hint = self._text("也可在微信搜索公众号", style="ActivationMuted")
+                168, 168, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        layout.addSpacing(10)
+        layout.addWidget(qr, 0, Qt.AlignHCenter)
+        hint = self._text("也可在微信搜索「都拓文化」", style="ScanHint")
         hint.setAlignment(Qt.AlignCenter)
-        card_layout.addWidget(hint)
-        body.addWidget(card, 0, Qt.AlignVCenter)
-        layout.addLayout(body, 1)
-        return page
+        layout.addWidget(hint)
+        layout.addStretch()
+        return panel
+
+    def _paste_code(self):
+        self.code.setFocus()
+        self.code.selectAll()
+        self.code.paste()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "grip"):
+            self.grip.move(self.width() - self.grip.width() - 3, self.height() - self.grip.height() - 3)
 
     def _update_activate_button(self):
         self.activate_button.setEnabled(bool(self.code.text().strip()) and not self.retry_timer.isActive())
@@ -333,14 +453,19 @@ QProgressBar::chunk { background: #9ed3bb; border-radius: 2px; }
                                  if self.enable_mic.isEnabled() and self.enable_mic.isChecked()
                                  else "将使用本地播放。虚拟麦克风可在「语音输出」中补设。")
         self.pages.setCurrentIndex(index)
-        self.rail.setVisible(index != 0)
-        self.footer.setVisible(index != 0)
+        activating = index == 0
+        self.rail.setVisible(not activating)
+        self.footer.setVisible(not activating)
+        body_margins = (0, 0, 0, 0) if activating else (15, 14, 15, 15)
+        content_margins = (0, 0, 0, 0) if activating else (0, 7, 7, 5)
+        self.body.setContentsMargins(*body_margins)
+        self.guide_content.setContentsMargins(*content_margins)
         self.progress.setValue(index + 1)
         self.step.setText(f"{index + 1} / 4\n" + ("激活", "轮盘入门", "语音设备", "进入工作台")[index])
         self.prev.setVisible(index > 1)
         self.skip.setVisible(index in (1, 2))
         self.next.setText("进入工作台" if index == 3 else "下一步")
-        if index == 0:
+        if activating:
             self.code.setFocus()
         reveal(self.pages, self.cfg.get("animations", True))
 
