@@ -212,7 +212,8 @@ class DriverInstallation(QObject):
         if sys.platform != "win32":
             return "虚拟麦克风仅支持 Windows。"
         return ("点击「安装虚拟麦克风」，确认 Windows 管理员提示，再在 VB-CABLE 窗口中点击"
-                "「Install Driver」。VB-CABLE 由 VB-Audio 提供（捐赠软件，vb-cable.com）。")
+                "「Install Driver」，看到安装成功的提示后点「确定」。"
+                "VB-CABLE 由 VB-Audio 提供（捐赠软件，vb-cable.com）。")
 
     # ---- 安装 ----
     def install(self, parent):
@@ -252,7 +253,7 @@ class DriverInstallation(QObject):
             self._stage = Path(tempfile.mkdtemp(prefix="jinkra-vbcable-"))
         setup = _extract_pack(pack, self._stage / "VBCABLE")
         self.process = _start_vb_cable(setup, int(self._owner.winId()) if self._owner else 0)
-        self.message = "请在 VB-CABLE 窗口中点击「Install Driver」，完成后关闭该窗口。"
+        self.message = ("请在 VB-CABLE 窗口中点击「Install Driver」。弹出 “Installation Complete and Successful” 是安装成功的提示，点「确定」后关闭 VB-CABLE 窗口即可，一般不需要重启。")
 
     def _poll(self):
         try:
@@ -287,7 +288,7 @@ class DriverInstallation(QObject):
                     self._finish(True, "虚拟麦克风已安装，已自动启用送声。")
                 elif time.monotonic() - self._waiting_since > ENDPOINT_WAIT:
                     self._finish(False, "安装窗口已关闭，但 Windows 还没有出现虚拟麦克风。"
-                                        "如果已点击「Install Driver」，请重启电脑后再打开"
+                                        "如果已看到 VB-CABLE 的安装成功提示，请按它的建议重启电脑后再打开"
                                         f" {APP_NAME}；否则请重新点击安装。")
         except Exception as error:  # 下载、解压或读取进程状态失败
             self._fail(str(error) or "虚拟麦克风安装失败，请重试。")

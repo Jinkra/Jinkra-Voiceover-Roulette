@@ -1,4 +1,4 @@
-Jinkra Voiceover Roulette  v1.3.5
+Jinkra Voiceover Roulette  v1.3.6
 Windows 音效轮盘
 改造自迟昼的 SR Voiceover Roulette，沿用 MIT 许可证。
 
@@ -544,7 +544,9 @@ LT / RT 按过一半就算按下（松手要落到更低才算松开，避免卡
 
 打开「语音输出」，在「实体麦克风」中选择自己的麦克风。
 还没有虚拟麦克风时，点「安装虚拟麦克风」：确认 Windows 管理员提示，
-在弹出的 VB-CABLE 窗口点「Install Driver」，完成后关闭该窗口。
+在弹出的 VB-CABLE 窗口点「Install Driver」。看到英文提示
+“Installation Complete and Successful! Reboot your system...” 说明已经装好，
+点「确定」后关闭 VB-CABLE 窗口即可，一般不用重启。
 识别到虚拟麦克风后程序自动启用「向虚拟麦克风送出混音」，
 然后在游戏或聊天软件里把输入设备设为 CABLE Output。
 此设备可同时接收实体麦克风和轮盘音效。

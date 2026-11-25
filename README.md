@@ -59,7 +59,7 @@
 启动向导和「语音输出」页都有「安装虚拟麦克风」按钮：
 
 1. 点击按钮，确认 Windows 管理员提示。
-2. 在弹出的 VB-CABLE 窗口点「Install Driver」，完成后关闭窗口。
+2. 在弹出的 VB-CABLE 窗口点「Install Driver」。看到 “Installation Complete and Successful” 即为安装成功，点「确定」并关闭窗口；它建议重启，但通常不重启也能直接使用。
 3. 程序识别到 `CABLE Input` / `CABLE Output` 后自动启用混音送声。在游戏或语音软件里把输入设备选为 **CABLE Output**。
 
 虚拟声卡使用 VB-Audio 的 [VB-CABLE](https://vb-audio.com/Cable/)：它带微软签名，开着 Secure Boot 的 Windows 10/11 也能直接加载。打包时会把官方驱动包 `VBCABLE_Driver_Pack46.zip` 原样（校验 SHA-256，不做任何修改）嵌入 EXE，国内用户不需要再连 VB-Audio 官网下载；安装时打开的是 VB-Audio 自己的安装窗口。VB-CABLE 是捐赠软件，版权归 VB-Audio 所有。

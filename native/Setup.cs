@@ -66,6 +66,8 @@ internal sealed class RouletteSetup : Form {
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern int SetCurrentProcessExplicitAppUserModelID(string id);
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
     [DllImport("user32.dll")]
     private static extern bool ReleaseCapture();
     [DllImport("user32.dll")]
@@ -155,6 +157,17 @@ internal sealed class RouletteSetup : Form {
     }
 
     // ---------------------------------------------------------------- 界面
+
+    // Windows 11 会给无边框窗口再画一圈 1 像素的系统边框，与自绘圆角叠在一起会在四边露出浅色线。
+    protected override void OnHandleCreated(EventArgs e) {
+        base.OnHandleCreated(e);
+        int none = unchecked((int)0xFFFFFFFE);  // DWMWA_COLOR_NONE
+        int square = 1;                          // DWMWCP_DONOTROUND：圆角由窗口区域负责
+        try {
+            DwmSetWindowAttribute(Handle, 34, ref none, sizeof(int));   // DWMWA_BORDER_COLOR
+            DwmSetWindowAttribute(Handle, 33, ref square, sizeof(int)); // DWMWA_WINDOW_CORNER_PREFERENCE
+        } catch (DllNotFoundException) {} catch (EntryPointNotFoundException) {}
+    }
 
     private Label PlaceLabel(string text, int x, int y, int width, int height, int size, Color color, FontStyle style) {
         var label = new Label { Text = text, ForeColor = color, Font = new Font("Microsoft YaHei UI", size, style) };
