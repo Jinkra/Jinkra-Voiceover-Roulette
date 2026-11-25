@@ -8,9 +8,9 @@ CatalogFile=JinkraVad.cat
 PnpLockdown=1
 
 [Manufacturer]
-%ProviderName%=Jinkra,NTamd64.10.0
+%ProviderName%=Jinkra,NTamd64.10.0...19041
 
-[Jinkra.NTamd64.10.0]
+[Jinkra.NTamd64.10.0...19041]
 %JinkraVad.DeviceDesc%=JinkraVad_Install,ROOT\JINKRAVAD
 
 [SourceDisksFiles]
