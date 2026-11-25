@@ -168,7 +168,7 @@ import theme
 from theme import accent, accent_dark, accent_light, set_accent
 
 APP_NAME = "Jinkra Voiceover Roulette"
-APP_VERSION = "v1.3.6"
+APP_VERSION = "v1.3.7"
 
 DEBUG = os.environ.get("SR_DEBUG") == "1"
 
