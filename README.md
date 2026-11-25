@@ -99,13 +99,13 @@ python build_installer.py
 - `Jinkra-Voiceover-Roulette-vX.Y.Z-Windows-x64.zip`：应用内「检查更新」下载的包。
 - 两者的 `.sha256`。
 
-安装目录里的 `Uninstall Jinkra Voiceover Roulette.exe` 是卸载向导，可选择保留设置、音效和激活记录。安装器和卸载器的源码在 [native/Setup.cs](native/Setup.cs)。已有的便携版目录可以直接选作安装目录，设置和音效原样保留。
+安装目录里的 `Uninstall Jinkra Voiceover Roulette.exe` 是卸载向导，可选择保留设置、音效和激活记录，也可勾选「同时卸载虚拟麦克风」（用 VB-CABLE 安装程序自带的 `-u -h` 静默卸载，需确认管理员提示）。安装器和卸载器的源码在 [native/Setup.cs](native/Setup.cs)。已有的便携版目录可以直接选作安装目录，设置和音效原样保留。
 
 静默安装与卸载（用于测试或部署）：
 
 ```bash
 "Jinkra-Voiceover-Roulette-Setup-vX.Y.Z-x64.exe" --silent "D:\Apps\Jinkra Voiceover Roulette" --no-desktop-shortcut
-"Uninstall Jinkra Voiceover Roulette.exe" --uninstall-silent "D:\Apps\Jinkra Voiceover Roulette" --remove-data
+"Uninstall Jinkra Voiceover Roulette.exe" --uninstall-silent "D:\Apps\Jinkra Voiceover Roulette" --remove-data --remove-vbcable
 ```
 
 如果以管理员权限运行的游戏收不到热键，可用右键菜单以管理员身份启动 Jinkra Voiceover Roulette。
