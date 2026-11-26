@@ -43,6 +43,13 @@ subprocess.run([
     str(ROOT / "native" / "Tts.cs"),
 ], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
 DATAS.append((str(TTS_HELPER), "."))
+
+# 版本标记：程序启动时核对解压出来的组件是不是本版本的（见 sr_roulette.ensure_fresh_bundle）
+import re as _re
+_VERSION = _re.search(r'^APP_VERSION = "(v[0-9.]+)"', (ROOT / "sr_roulette.py").read_text(encoding="utf-8"), _re.M).group(1)
+_MARKER = BUILD / "build-version.txt"
+_MARKER.write_text(_VERSION, encoding="utf-8")
+DATAS.append((str(_MARKER), "."))
 # VB-CABLE 官方驱动包原样嵌入 EXE（不修改、不解包），用户安装时无需再连 VB-Audio 官网。
 # 构建机只在 build/ 里没有缓存时下载一次，SHA-256 不符直接中止打包。
 import sys

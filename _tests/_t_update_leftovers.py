@@ -90,6 +90,46 @@ class LeftoverTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("exited", result.stdout)
 
+    def test_clean_environment_drops_pyinstaller_state(self):
+        import updates
+        env = updates.clean_environment({"PATH": "x", "_PYI_APPLICATION_HOME_DIR": "C:/old", "_PYI_ARCHIVE_FILE": "a",
+                                         "_PYI_PARENT_PROCESS_LEVEL": "1", "_MEIPASS2": "C:/old", "JINKRA_RELAUNCHED": "1"})
+        self.assertEqual(env, {"PATH": "x", "PYINSTALLER_RESET_ENVIRONMENT": "1"})
+
+    def test_apply_update_launches_updater_with_clean_environment(self):
+        import updates
+        base = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (base / "jinkra-updater.exe").write_bytes(b"MZ")
+        stage = base / ".jinkra-update-x"
+        stage.mkdir()
+        with patch.object(sys, "frozen", True, create=True), patch.object(sys, "_MEIPASS", str(base), create=True), \
+             patch.dict(os.environ, {"_PYI_APPLICATION_HOME_DIR": str(base)}), \
+             patch.object(updates.subprocess, "Popen") as popen:
+            updates.apply_update(stage / updates.NAME)
+        env = popen.call_args.kwargs["env"]
+        self.assertNotIn("_PYI_APPLICATION_HOME_DIR", env)
+        self.assertEqual(env["PYINSTALLER_RESET_ENVIRONMENT"], "1")
+
+    def test_stale_bundle_relaunches_once(self):
+        bundle = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        common = (patch.object(sys, "frozen", True, create=True),
+                  patch.object(sys, "_MEIPASS", str(bundle), create=True))
+        with common[0], common[1], patch("subprocess.Popen") as popen, \
+             patch.dict(os.environ, {"_PYI_APPLICATION_HOME_DIR": "C:/old"}, clear=False):
+            os.environ.pop("JINKRA_RELAUNCHED", None)
+            self.assertTrue(sr.ensure_fresh_bundle())          # 没有版本标记：旧版的解压目录
+            env = popen.call_args.kwargs["env"]
+            self.assertNotIn("_PYI_APPLICATION_HOME_DIR", env)
+            self.assertEqual(env["JINKRA_RELAUNCHED"], "1")
+            popen.reset_mock()
+            (bundle / sr.BUNDLE_MARKER).write_text(sr.APP_VERSION, encoding="utf-8")
+            self.assertFalse(sr.ensure_fresh_bundle())         # 版本对得上：正常启动
+            (bundle / sr.BUNDLE_MARKER).write_text("v0.0.1", encoding="utf-8")
+            os.environ["JINKRA_RELAUNCHED"] = "1"
+            self.assertFalse(sr.ensure_fresh_bundle())         # 已经重启过：不再循环
+            self.assertNotIn("JINKRA_RELAUNCHED", os.environ)
+            popen.assert_not_called()
+
     def test_progress_text_is_dark(self):
         from update_dialog import UpdateDialog
         with patch.object(UpdateDialog, "_check", lambda self: None):

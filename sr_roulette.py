@@ -72,6 +72,50 @@ v0.5.5：
 
 from __future__ import annotations
 
+# 版本号和「解压组件自检」放在最前面，只依赖 os/sys/pathlib：
+# 自检要在导入任何扩展模块之前跑（旧的解压目录里可能缺新版要用的东西）。
+import os
+import sys
+from pathlib import Path
+
+APP_NAME = "Jinkra Voiceover Roulette"
+APP_VERSION = "v1.3.14"
+BUNDLE_MARKER = "build-version.txt"
+
+
+def ensure_fresh_bundle() -> bool:
+    """解压出来的组件不是本版本的，就用干净的环境变量重启一次。返回 True 表示已重启、本进程应退出。
+
+    PyInstaller 单文件程序用 _PYI_* 环境变量记录解压目录。v1.3.13 及更早的版本启动更新程序时
+    把它们一路传给了新版；新版和旧版在同一路径，启动器就把自己当成旧版的子进程，沿用旧版的
+    解压目录：Python 代码是新的，DLL 和 exe 组件却是旧的（AI 朗读找不到 sherpa_onnx）。
+    打包时写入的 build-version.txt 能分辨出这种情况。
+
+    必须在导入任何第三方库之前执行：旧的解压目录里可能根本没有新版要用的库。
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    if os.environ.pop("JINKRA_RELAUNCHED", None):
+        return False           # 已经重启过一次了，别反复重启
+    try:
+        current = (Path(sys._MEIPASS) / BUNDLE_MARKER).read_text(encoding="utf-8").strip()
+    except OSError:
+        current = ""
+    if current == APP_VERSION:
+        return False
+    import subprocess
+
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("_PYI_") and key != "_MEIPASS2"}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    env["JINKRA_RELAUNCHED"] = "1"
+    subprocess.Popen([sys.executable, *sys.argv[1:]], env=env, close_fds=True)
+    return True
+
+
+if __name__ == "__main__" and ensure_fresh_bundle():
+    sys.exit(0)
+
 import ctypes
 import json
 import math
@@ -166,9 +210,6 @@ from sounds_config import (
 import sounds_config as _sounds_config
 import theme
 from theme import accent, accent_dark, accent_light, set_accent
-
-APP_NAME = "Jinkra Voiceover Roulette"
-APP_VERSION = "v1.3.13"
 
 DEBUG = os.environ.get("SR_DEBUG") == "1"
 

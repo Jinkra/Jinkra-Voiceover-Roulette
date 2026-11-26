@@ -3,6 +3,7 @@
 import hashlib
 import http.client
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -236,11 +237,26 @@ def download(release, directory, notify):
     raise OSError("可用线路均未能下载并校验更新包")
 
 
+def clean_environment(environ=None):
+    """给要启动的其他程序一份干净的环境变量。
+
+    PyInstaller 单文件程序用 _PYI_* 环境变量告诉子进程「解压目录在哪」。原样传给更新程序、
+    再由它传给新版的话，新版的启动器会以为自己是旧版的子进程，直接沿用旧版的解压目录：
+    Python 代码是新版的，DLL 和 exe 组件却是旧版的（例如找不到 sherpa_onnx）。
+    """
+    env = dict(os.environ if environ is None else environ)
+    for key in list(env):
+        if key.startswith("_PYI_") or key in ("_MEIPASS2", "JINKRA_RELAUNCHED"):
+            env.pop(key)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
+
 def apply_update(staged):
     if not getattr(sys, "frozen", False):
         raise OSError("源码模式请从发布页下载安装包")
     exe = Path(sys.executable).resolve()
     helper = staged.parent / "apply-update.exe"
     shutil.copy2(Path(sys._MEIPASS) / "jinkra-updater.exe", helper)
-    subprocess.Popen([str(helper), str(staged), str(exe)])
+    subprocess.Popen([str(helper), str(staged), str(exe)], env=clean_environment())
 

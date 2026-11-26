@@ -32,10 +32,7 @@ internal static class JinkraUpdater
             ReplaceWhenClosed(staged, current, backup);
             try
             {
-                using (var process = Process.Start(new ProcessStartInfo(current, "--after-update") {
-                    WorkingDirectory = Path.GetDirectoryName(current),
-                    UseShellExecute = true
-                }))
+                using (var process = Process.Start(Fresh(current, "--after-update")))
                 {
                     if (process == null || (process.WaitForExit(6500) && process.ExitCode != 0))
                         throw new IOException("更新后的程序未持续运行。");
@@ -44,7 +41,7 @@ internal static class JinkraUpdater
             catch
             {
                 ReplaceWhenClosed(backup, current, null);
-                Process.Start(current);
+                Process.Start(Fresh(current, "")).Dispose();
                 throw;
             }
             // 备份删不掉（被占用、访问被拒绝）不影响更新结果；新版下次启动时会清理暂存文件夹。
@@ -59,6 +56,26 @@ internal static class JinkraUpdater
                             "Jinkra 更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return 1;
         }
+    }
+
+    // 启动新版时不能带着旧版的 PyInstaller 环境变量（_PYI_*）：新版的启动器会把它当成
+    // 自己的子进程，直接沿用旧版的解压目录，Python 代码是新的、DLL 却是旧的。
+    private static ProcessStartInfo Fresh(string exe, string arguments)
+    {
+        var start = new ProcessStartInfo(exe, arguments) {
+            WorkingDirectory = Path.GetDirectoryName(exe),
+            UseShellExecute = false
+        };
+        var stale = new System.Collections.Generic.List<string>();
+        foreach (string key in start.EnvironmentVariables.Keys)
+            if (key.StartsWith("_PYI_", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("_MEIPASS2", StringComparison.OrdinalIgnoreCase) ||
+                key.Equals("JINKRA_RELAUNCHED", StringComparison.OrdinalIgnoreCase))
+                stale.Add(key);
+        foreach (string key in stale)
+            start.EnvironmentVariables.Remove(key);
+        start.EnvironmentVariables["PYINSTALLER_RESET_ENVIRONMENT"] = "1";
+        return start;
     }
 
     private static void WaitForOldCopies(string exe)
