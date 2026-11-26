@@ -168,7 +168,7 @@ import theme
 from theme import accent, accent_dark, accent_light, set_accent
 
 APP_NAME = "Jinkra Voiceover Roulette"
-APP_VERSION = "v1.3.12"
+APP_VERSION = "v1.3.13"
 
 DEBUG = os.environ.get("SR_DEBUG") == "1"
 
@@ -6328,10 +6328,12 @@ def main() -> int:
     def quit_app():
         win = _settings_holder.get("win")
         if win is not None and win.isVisible():
-            win.closed.connect(app.quit, Qt.ConnectionType.SingleShotConnection)
+            # 设置窗口先走完淡出、保存好位置再退出。退出用 exit 而不是 quit：
+            # Qt 6 的 quit 会再逐个确认关窗，任何一个窗口拒绝都会让退出被取消。
+            win.closed.connect(lambda: app.exit(0), Qt.ConnectionType.SingleShotConnection)
             win.close()
         else:
-            app.quit()
+            app.exit(0)
 
     act_quit.triggered.connect(quit_app)
     menu.addAction(act_quit)

@@ -132,8 +132,11 @@ class UpdateDialog(QDialog):
                 self._on_failed(str(error))
                 return
             self.accept()
-            from PySide6.QtWidgets import QApplication
-            QApplication.quit()
+            # 不能用 QApplication.quit()：Qt 6 会先逐个关窗口，设置窗口为了淡出动画
+            # 会先拒绝关闭，整个退出就被取消，旧版一直不退，更新程序只好干等。
+            # exit() 直接结束事件循环，不经过关窗确认。
+            from PySide6.QtCore import QCoreApplication
+            QCoreApplication.exit(0)
             return
         self.log.clear()
         self.status.setText("正在自动选择线路并校验更新包…")

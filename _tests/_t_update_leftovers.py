@@ -48,6 +48,48 @@ class LeftoverTests(unittest.TestCase):
         self.assertTrue((base / "sounds" / "我的音效.wav").exists())
         self.assertTrue((base / "sounds.json").exists())
 
+    def test_update_and_restart_really_exits_with_settings_window_open(self):
+        """设置窗口开着（它会先拒绝关闭做淡出动画）时点「更新并重启」，程序必须真正退出。"""
+        import subprocess
+        import textwrap
+        script = textwrap.dedent(r"""
+            import os, sys, time
+            os.environ["QT_QPA_PLATFORM"] = "offscreen"
+            sys.path.insert(0, sys.argv[1])
+            from pathlib import Path
+            from unittest.mock import patch
+            from PySide6.QtCore import QTimer
+            from PySide6.QtWidgets import QApplication, QWidget
+            app = QApplication([])
+            app.setQuitOnLastWindowClosed(False)
+            import sr_roulette as sr
+            import updates
+            from update_dialog import UpdateDialog
+
+            class Settings(QWidget):
+                def closeEvent(self, e):
+                    e.ignore()
+
+            win = Settings(); win.show()
+            with patch.object(UpdateDialog, "_check", lambda self: None):
+                dialog = UpdateDialog(sr, win)
+            dialog.staged = Path("staged.exe")
+
+            def press():
+                with patch.object(updates, "apply_update"):
+                    dialog._download_or_apply()
+
+            QTimer.singleShot(200, lambda: dialog.exec())
+            QTimer.singleShot(500, press)
+            QTimer.singleShot(5000, lambda: os._exit(3))
+            app.exec()
+            print("exited", flush=True)
+        """)
+        result = subprocess.run([sys.executable, "-c", script, str(Path(__file__).resolve().parents[1])],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("exited", result.stdout)
+
     def test_progress_text_is_dark(self):
         from update_dialog import UpdateDialog
         with patch.object(UpdateDialog, "_check", lambda self: None):

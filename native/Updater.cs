@@ -47,8 +47,10 @@ internal static class JinkraUpdater
                 Process.Start(current);
                 throw;
             }
+            // 备份删不掉（被占用、访问被拒绝）不影响更新结果；新版下次启动时会清理暂存文件夹。
             try { File.Delete(backup); }
             catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
             return 0;
         }
         catch (Exception error)
