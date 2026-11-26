@@ -30,6 +30,19 @@ subprocess.run([
 
 DATAS = [("LICENSE", "."), ("icon.ico", "."), ("assets/wechat-promotion.png", "."),
          (str(UPDATER), ".")]
+
+# AI 朗读的系统语音助手。OneCore 语音（慧慧、康康、瑶瑶）只能走 Windows.Media.SpeechSynthesis，
+# 引用系统自带的 WinRT 元数据编译，不需要 Windows SDK。
+TTS_HELPER = BUILD / "jinkra-tts.exe"
+_FW = CSC.parent
+_WINMD = Path(os.environ["SystemRoot"]) / "System32" / "WinMetadata"
+subprocess.run([
+    str(CSC), "/nologo", "/codepage:65001", "/target:exe", "/platform:x64", f"/out:{TTS_HELPER}",
+    *(f"/r:{_WINMD / name}" for name in ("Windows.Foundation.winmd", "Windows.Media.winmd", "Windows.Storage.winmd")),
+    f"/r:{_FW / 'System.Runtime.dll'}",
+    str(ROOT / "native" / "Tts.cs"),
+], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+DATAS.append((str(TTS_HELPER), "."))
 # VB-CABLE 官方驱动包原样嵌入 EXE（不修改、不解包），用户安装时无需再连 VB-Audio 官网。
 # 构建机只在 build/ 里没有缓存时下载一次，SHA-256 不符直接中止打包。
 import sys
@@ -142,11 +155,13 @@ def _keep(name: str) -> bool:
 a = Analysis(
     ["sr_roulette.py"],
     pathex=[],
-    binaries=[],
+    # sherpa-onnx：AI 朗读包的离线语音引擎（含 onnxruntime），DLL 要显式收进来
+    binaries=__import__("PyInstaller.utils.hooks", fromlist=["collect_dynamic_libs"]).collect_dynamic_libs("sherpa_onnx"),
     datas=DATAS,
     # settings_window 是在函数里延迟导入的（避免和主模块循环依赖），
     # 显式列出来免得静态分析漏掉
     hiddenimports=[
+        "tts", "sherpa_onnx",
         "PySide6.QtMultimedia", "PySide6.QtNetwork",
         "settings_window", "sounds_config", "theme",
     ],

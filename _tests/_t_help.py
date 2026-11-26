@@ -158,8 +158,13 @@ cfg.sync([p.name for p in snd.iterdir()])
 bank = sr.SoundBank(8, scfg=cfg)
 win = sw.SettingsWindow(dict(sr.DEFAULT_CONFIG), cfg, bank, None)
 names = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-check(names == ["音效库", "快捷键", "轮盘", "语音输出", "说明"],
-      "标签页顺序：说明排在最后", str(names))
+# AI 朗读追加在页号 5（不打乱已有页号和「启动页」设置），导航里排在音效工作台后面
+check(names == ["音效库", "快捷键", "轮盘", "语音输出", "说明", "AI 朗读"],
+      "页号顺序不变，AI 朗读追加在最后", str(names))
+win.show(); app.processEvents()
+nav = sorted(win.navigation.buttons(), key=lambda b: b.x())
+check([b.text() for b in nav] == ["音效工作台", "AI 朗读", "快捷键", "轮盘设置", "语音输出", "使用说明"],
+      "导航顺序：AI 朗读在音效工作台后面，说明排在最后", str([b.text() for b in nav]))
 check(win.tabs.widget(4) is win.page_help, "第 5 个标签就是说明页")
 win.close()
 

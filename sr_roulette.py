@@ -1015,7 +1015,12 @@ DEFAULT_CONFIG = {
     "cable_effect_gain": 1.0,  # 音效送给对方多响
     "monitor_enabled": True,  # 音效是否也从自己耳机里放出来
     "mic_latency_ms": 60,
-    "mic_denoise": False,     # AI 降噪（RNNoise），需先在「语音输出」里安装降噪模型     # 麦克风缓冲留多少余量，太小吃时钟漂移、太大手慢
+    "mic_denoise": False,
+    "tts_voice": "",          # AI 朗读的音色：sys:<系统语音> 或 pack:<朗读包>[:<组>]
+    "tts_index": 1,           # 多音色朗读包里的音色编号（从 1 开始）
+    "tts_speed": 1.0,
+    "tts_gain": 1.0,
+    "tts_text": "",     # AI 降噪（RNNoise），需先在「语音输出」里安装降噪模型     # 麦克风缓冲留多少余量，太小吃时钟漂移、太大手慢
 }
 
 # 老版本没有这些手感参数，混用会让"手感差"的问题继续存在，所以只继承用户真正在意的项
@@ -3592,6 +3597,27 @@ class AudioEngine(QObject):
         """领一个新的触发编号。所有非 0 的编号都只用来"整次停掉"。"""
         self._token_seq += 1
         return self._token_seq
+
+    def play_speech(self, samples: np.ndarray, rate: int, token: int,
+                    delay_frames: int = 0, gain: float = 1.0) -> int:
+        """播放一段合成语音（AI 朗读）：单声道浮点 → 引擎格式，两个出口都送。
+
+        返回按引擎采样率算的帧数，朗读页用它给下一句排程（边合成边播放）。
+        """
+        if samples is None or len(samples) == 0:
+            return 0
+        if not self._active_mixers():
+            self.rebuild()
+        target = self.fmt.sampleRate()
+        mono = np.asarray(samples, dtype=np.float32)
+        if int(rate) != target:
+            n_out = max(1, int(round(len(mono) * target / float(rate))))
+            mono = np.interp(np.arange(n_out) * (float(rate) / target),
+                             np.arange(len(mono)), mono).astype(np.float32)
+        clip = np.repeat(mono[:, None], max(1, self.fmt.channelCount()), axis=1)
+        for mix in self._active_mixers():
+            mix.trigger(clip, max(0.0, float(gain)), delay=max(0, int(delay_frames)), token=token)
+        return len(clip)
 
     def stop_token(self, token: int) -> None:
         """停掉某一次触发放出去的全部声音。token=0 什么也不做。"""

@@ -10,11 +10,15 @@ import ctypes.wintypes
 import json
 import math
 import os
+import re
+import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
 
 from PySide6.QtCore import (
     QEvent,
+    QObject,
     QMimeData,
     QPropertyAnimation,
     QEasingCurve,
@@ -64,6 +68,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -78,6 +83,7 @@ from PySide6.QtWidgets import (
 import sr_roulette as sr
 import driver_setup
 import denoise
+import tts
 from audio_routes import MIC_ENDPOINT
 from ui_chrome import Dropdown, branded_menu, motion_allowed
 from ui_chrome import DoubleSpinBox as QDoubleSpinBox
@@ -1028,6 +1034,12 @@ def _navigation_icon(symbol: str, *, on_dark: bool = True) -> QIcon:
         painter.drawLine(9, 2, 9, 6)
         painter.drawLine(3, 12.5, 6.5, 10.5)
         painter.drawLine(15, 12.5, 11.5, 10.5)
+    elif symbol == "speech":
+        painter.drawRoundedRect(QRectF(1.5, 2.5, 15, 10.5), 3, 3)
+        painter.drawLine(QPointF(5, 13), QPointF(4, 16.5))
+        painter.drawLine(QPointF(4, 16.5), QPointF(8.5, 13))
+        for x, h in ((5.5, 2.2), (8, 3.6), (10.5, 2.8), (13, 1.6)):
+            painter.drawLine(QPointF(x, 7.75 - h), QPointF(x, 7.75 + h))
     elif symbol == "voice":
         painter.drawRoundedRect(QRectF(6.5, 1.5, 5, 9), 2.5, 2.5)
         painter.drawArc(QRectF(4, 4, 10, 10), 180 * 16, 180 * 16)
@@ -4127,6 +4139,396 @@ class MicPage(QWidget):
         self._refresh_status()
 
 
+# ---------------------------------------------------------------- AI 朗读
+
+class _SpeechSignals(QObject):
+    """后台线程把结果交回界面线程用的信号（跨线程自动排队）。"""
+    chunk = Signal(int, object, int)        # 任务号, 样本, 采样率
+    done = Signal(int, object, int)
+    failed = Signal(int, str)
+    pack_progress = Signal(str, int, str)   # 包, 百分比, 线路
+    pack_done = Signal(str, str)            # 包, 错误（空 = 成功）
+
+
+class SpeechPage(QWidget):
+    """AI 朗读：输入文字，用系统语音或下载的朗读包读出来，送进混音。"""
+
+    saved = Signal(str)          # 保存成音效后通知工作台刷新音效库
+
+    def __init__(self, cfg: dict, engine=None) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.engine = engine
+        self.helper = tts.helper_path(sr.BASE_DIR, sr.RESOURCE_DIR)
+        self.signals = _SpeechSignals()
+        self.signals.chunk.connect(self._on_chunk)
+        self.signals.done.connect(self._on_done)
+        self.signals.failed.connect(self._on_failed)
+        self.signals.pack_progress.connect(self._on_pack_progress)
+        self.signals.pack_done.connect(self._on_pack_done)
+        self._job = 0                 # 当前朗读任务号；新任务或停止时 +1，旧任务的回调一律作废
+        self._cancel = threading.Event()
+        self._token = 0
+        self._t0 = 0.0
+        self._scheduled = 0
+        self._last = None             # 最近一次完整合成：(样本, 采样率, 文字)
+        self._chunks: list = []
+        self._installing: dict[str, threading.Event] = {}
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+        body = QWidget()
+        root = QHBoxLayout(body)
+        root.setContentsMargins(0, 0, 5, 0)
+        root.setSpacing(16)
+        left = QVBoxLayout()
+        left.setSpacing(12)
+        right = QVBoxLayout()
+        right.setSpacing(12)
+        root.addLayout(left, 3)
+        root.addLayout(right, 2)
+        scroll.setWidget(body)
+        self.columns = root
+
+        # ---- 朗读 ----
+        card, lay = _card("朗读")
+        self.text = QPlainTextEdit()
+        self.text.setPlaceholderText("输入要朗读的文字，按 Ctrl+Enter 朗读")
+        self.text.setPlainText(str(cfg.get("tts_text", "")))
+        self.text.setMinimumHeight(130)
+        self.text.textChanged.connect(self._on_text_changed)
+        lay.addWidget(self.text)
+        self.count = QLabel("")
+        self.count.setObjectName("Hint")
+        self.count.setAlignment(Qt.AlignRight)
+        lay.addWidget(self.count)
+
+        self.voice = Dropdown()
+        self.voice.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.voice.setMinimumContentsLength(14)
+        self.voice.currentIndexChanged.connect(self._on_voice_changed)
+        lay.addWidget(_row("音色", self.voice))
+        self.index = QSpinBox()
+        self.index.setRange(1, 1)
+        self.index.valueChanged.connect(self._save_options)
+        self.index_row = _row("音色编号", self.index)
+        lay.addWidget(self.index_row)
+        self.speed = WheelPage._slider(int(round(float(cfg.get("tts_speed", 1.0)) * 100)), 50, 200, " %")
+        self.speed.slider.valueChanged.connect(self._save_options)
+        lay.addWidget(_row("语速", self.speed))
+        self.gain = WheelPage._slider(int(round(float(cfg.get("tts_gain", 1.0)) * 100)), 0, 150, " %")
+        self.gain.slider.valueChanged.connect(self._save_options)
+        lay.addWidget(_row("音量", self.gain))
+
+        buttons = QHBoxLayout()
+        self.btn_speak = QPushButton("朗读")
+        self.btn_speak.setObjectName("Primary")
+        self.btn_speak.clicked.connect(self.speak)
+        self.btn_stop = QPushButton("停止")
+        self.btn_stop.clicked.connect(self.stop)
+        self.btn_save = QPushButton("保存为音效")
+        self.btn_save.setToolTip("把刚才读出来的声音存进 sounds/朗读 文件夹，可以拖上轮盘、绑快捷键")
+        self.btn_save.clicked.connect(self._save_sound)
+        for button in (self.btn_speak, self.btn_stop, self.btn_save):
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        lay.addLayout(buttons)
+        self.status = _WrapLabel("")
+        self.status.setObjectName("RouteStatus")
+        self.status.hide()
+        lay.addWidget(self.status)
+        hint = _WrapLabel("朗读会从你的耳机放出来；在「语音输出」开启送声后，队友也能通过虚拟麦克风听到。")
+        hint.setObjectName("Hint")
+        lay.addWidget(hint)
+        left.addWidget(card)
+        left.addStretch(1)
+
+        # ---- 朗读包 ----
+        card2, lay2 = _card("朗读包")
+        intro = _WrapLabel("系统语音无需下载。朗读包是离线 AI 语音，下载一次即可离线使用，"
+                           "走国内加速线路并校验文件完整性。")
+        intro.setObjectName("Hint")
+        lay2.addWidget(intro)
+        self.pack_rows: dict[str, tuple] = {}
+        for pack in tts.PACKS:
+            box = QFrame()
+            box.setObjectName("PackRow")
+            row = QHBoxLayout(box)
+            row.setContentsMargins(0, 6, 0, 6)
+            texts = QVBoxLayout()
+            texts.setSpacing(2)
+            title = QLabel(pack.name)
+            title.setStyleSheet("font-weight:600;")
+            texts.addWidget(title)
+            info = _WrapLabel(f"{pack.summary}\n许可：{pack.license}")
+            info.setObjectName("Hint")
+            texts.addWidget(info)
+            row.addLayout(texts, 1)
+            button = QPushButton()
+            button.setMinimumWidth(96)
+            button.clicked.connect(lambda _checked=False, pid=pack.id: self._toggle_pack(pid))
+            row.addWidget(button, 0, Qt.AlignTop)
+            lay2.addWidget(box)
+            self.pack_rows[pack.id] = (button, info)
+        right.addWidget(card2)
+        right.addStretch(1)
+
+        shortcut = QShortcut(QKeySequence("Ctrl+Return"), self.text)
+        shortcut.activated.connect(self.speak)
+        self._refresh_packs()
+        self.reload_voices()
+        self._on_text_changed()
+        self._set_busy(False)
+
+    def _say(self, text: str) -> None:
+        self.status.setText(text)
+        self.status.setVisible(bool(text))
+
+    # ---- 布局 ----
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.columns.setDirection(QBoxLayout.TopToBottom if self.width() < 760 else QBoxLayout.LeftToRight)
+
+    # ---- 音色 ----
+    def reload_voices(self) -> None:
+        current = str(self.cfg.get("tts_voice") or "")
+        voices = tts.system_voices(self.helper) + tts.pack_voices(sr.BASE_DIR)
+        self.voice.blockSignals(True)
+        self.voice.clear()
+        for voice in voices:
+            self.voice.addItem(voice.label, voice)
+        if not voices:
+            self.voice.addItem("没有可用的音色，请先安装朗读包", None)
+        index = next((i for i, v in enumerate(voices) if v.key == current), 0)
+        self.voice.setCurrentIndex(index)
+        self.voice.blockSignals(False)
+        self._on_voice_changed(apply_saved_index=True)
+
+    def _voice(self):
+        return self.voice.currentData()
+
+    def _on_voice_changed(self, *_args, apply_saved_index: bool = False) -> None:
+        voice = self._voice()
+        many = voice is not None and voice.count > 1
+        self.index_row.setVisible(many)
+        self.index.blockSignals(True)
+        self.index.setRange(1, voice.count if many else 1)
+        if apply_saved_index:
+            self.index.setValue(int(self.cfg.get("tts_index", 1)))
+        self.index.blockSignals(False)
+        self._save_options()
+        self._update_buttons()
+
+    def _save_options(self, *_args) -> None:
+        voice = self._voice()
+        if voice is not None:
+            self.cfg["tts_voice"] = voice.key
+        self.cfg["tts_index"] = int(self.index.value())
+        self.cfg["tts_speed"] = self.speed.slider.value() / 100.0
+        self.cfg["tts_gain"] = self.gain.slider.value() / 100.0
+        sr.save_config(self.cfg)
+
+    def _on_text_changed(self) -> None:
+        text = self.text.toPlainText()
+        if len(text) > tts.MAX_CHARS:
+            cursor = self.text.textCursor()
+            self.text.setPlainText(text[:tts.MAX_CHARS])
+            self.text.setTextCursor(cursor)
+            text = text[:tts.MAX_CHARS]
+        self.count.setText(f"{len(text)} / {tts.MAX_CHARS}")
+        self.cfg["tts_text"] = text
+        self._update_buttons()
+
+    def _update_buttons(self) -> None:
+        busy = self._token != 0
+        self.btn_speak.setEnabled(bool(self.text.toPlainText().strip()) and self._voice() is not None)
+        self.btn_stop.setEnabled(busy)
+        self.btn_save.setEnabled(self._last is not None and not busy)
+
+    def _set_busy(self, busy: bool) -> None:
+        self.btn_speak.setText("重新朗读" if busy else "朗读")
+        self._update_buttons()
+
+    # ---- 朗读 ----
+    def speak(self) -> None:
+        text = self.text.toPlainText().strip()
+        voice = self._voice()
+        if not text or voice is None:
+            return
+        if self.engine is None:
+            self._say("音频引擎未就绪，无法朗读。")
+            return
+        self.stop(quiet=True)
+        sr.save_config(self.cfg)
+        self._job += 1
+        job = self._job
+        self._cancel = cancel = threading.Event()
+        self._token = self.engine.new_token()
+        self._scheduled = 0
+        self._t0 = 0.0
+        self._chunks = []
+        self._last = None
+        speed = self.speed.slider.value() / 100.0
+        index = self.index.value() - 1
+        self._say("正在加载朗读包…" if voice.key.startswith("pack:") else "正在合成…")
+        self._set_busy(True)
+
+        def work():
+            try:
+                if voice.key.startswith("sys:"):
+                    if self.helper is None:
+                        raise OSError("缺少系统语音组件，请重新安装 Jinkra Voiceover Roulette。")
+                    samples, rate = tts.synth_system(self.helper, voice.key, text, speed)
+                    self.signals.chunk.emit(job, samples, rate)
+                else:
+                    samples, rate = tts.synth_pack(
+                        sr.BASE_DIR, voice.key, index, text, speed,
+                        on_chunk=lambda chunk, r: self.signals.chunk.emit(job, chunk, r),
+                        cancelled=cancel.is_set)
+                self.signals.done.emit(job, samples, rate)
+            except Exception as error:  # 合成失败要告诉用户，不能悄悄没声音
+                self.signals.failed.emit(job, str(error) or type(error).__name__)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_chunk(self, job: int, samples, rate: int) -> None:
+        """边合成边播放：每到一句就排在上一句后面。"""
+        if job != self._job or self._cancel.is_set() or self.engine is None:
+            return
+        fps = self.engine.fmt.sampleRate()
+        now = time.monotonic()
+        if not self._t0:
+            self._t0 = now
+        elapsed = int((now - self._t0) * fps)
+        delay = max(0, self._scheduled - elapsed)
+        frames = self.engine.play_speech(samples, rate, self._token, delay,
+                                         self.gain.slider.value() / 100.0)
+        self._scheduled = elapsed + delay + frames
+        self._chunks.append((samples, rate))
+        self._say("正在朗读…")
+
+    def _on_done(self, job: int, samples, rate: int) -> None:
+        if job != self._job:
+            return
+        if self._cancel.is_set():
+            return
+        self._last = (samples, rate, self.text.toPlainText().strip())
+        remaining = 0.0
+        if self.engine is not None and self._t0:
+            fps = self.engine.fmt.sampleRate()
+            remaining = max(0.0, self._scheduled / fps - (time.monotonic() - self._t0))
+        self._say(f"朗读完成，共 {len(samples) / max(1, rate):.1f} 秒。可以「保存为音效」放上轮盘。")
+        QTimer.singleShot(int(remaining * 1000) + 200, lambda j=job: self._finish(j))
+
+    def _finish(self, job: int) -> None:
+        if job == self._job:
+            self._token = 0
+            self._set_busy(False)
+
+    def _on_failed(self, job: int, message: str) -> None:
+        if job != self._job:
+            return
+        self._token = 0
+        self._set_busy(False)
+        self._say(f"朗读失败：{message}")
+
+    def stop(self, quiet: bool = False) -> None:
+        self._cancel.set()
+        if self._token and self.engine is not None:
+            self.engine.stop_token(self._token)
+        self._job += 1
+        self._token = 0
+        if not quiet:
+            self._say("已停止。")
+        self._set_busy(False)
+
+    def _save_sound(self) -> None:
+        if self._last is None:
+            return
+        samples, rate, text = self._last
+        stem = re.sub(r'[\\/:*?"<>|\r\n\t]+', "", text)[:16].strip() or "朗读"
+        folder = sr.SOUNDS_DIR / "朗读"
+        path = folder / f"{stem}.wav"
+        n = 2
+        while path.exists():
+            path = folder / f"{stem}（{n}）.wav"
+            n += 1
+        try:
+            tts.save_wav(path, samples, rate)
+        except OSError as error:
+            self._say(f"保存失败：{error}")
+            return
+        self._say(f"已保存到音效库：朗读/{path.name}。在「音效工作台」把它拖上轮盘即可。")
+        self.saved.emit(str(path))
+
+    # ---- 朗读包 ----
+    def _refresh_packs(self) -> None:
+        for pack in tts.PACKS:
+            button, _info = self.pack_rows[pack.id]
+            if pack.id in self._installing:
+                button.setEnabled(True)
+                continue
+            button.setEnabled(True)
+            button.setText("删除" if tts.installed(sr.BASE_DIR, pack) else f"安装 · {pack.size / 1e6:.0f} MB")
+
+    def _toggle_pack(self, pack_id: str) -> None:
+        pack = tts.pack_by_id(pack_id)
+        if pack is None:
+            return
+        if pack_id in self._installing:
+            self._installing[pack_id].set()      # 再点一次 = 取消下载
+            return
+        if tts.installed(sr.BASE_DIR, pack):
+            answer = QMessageBox.question(self, "删除朗读包", f"删除朗读包「{pack.name}」吗？以后可以重新下载。",
+                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer == QMessageBox.Yes:
+                if self._voice() is not None and self._voice().pack == pack_id:
+                    self.stop(quiet=True)
+                tts.remove(sr.BASE_DIR, pack)
+                self._refresh_packs()
+                self.reload_voices()
+            return
+        cancel = threading.Event()
+        self._installing[pack_id] = cancel
+        self.pack_rows[pack_id][0].setText("连接中…（点击取消）")
+
+        def work():
+            try:
+                tts.download(sr.BASE_DIR, pack,
+                             lambda percent, route: self.signals.pack_progress.emit(pack_id, int(percent), route),
+                             cancel.is_set)
+                self.signals.pack_done.emit(pack_id, "")
+            except Exception as error:
+                self.signals.pack_done.emit(pack_id, "已取消" if cancel.is_set() else str(error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_pack_progress(self, pack_id: str, percent: int, route: str) -> None:
+        button = self.pack_rows[pack_id][0]
+        button.setText("正在解压…" if route == "正在解压" else f"{percent}% · 点击取消")
+        button.setToolTip(f"下载线路：{route}")
+
+    def _on_pack_done(self, pack_id: str, error: str) -> None:
+        self._installing.pop(pack_id, None)
+        pack = tts.pack_by_id(pack_id)
+        if error:
+            self._say(f"朗读包「{pack.name}」没有装好：{error}")
+        else:
+            self._say(f"朗读包「{pack.name}」已安装，可以在「音色」里选择。")
+            self.cfg["tts_voice"] = pack.groups[0].key
+        self._refresh_packs()
+        self.reload_voices()
+
+    def hideEvent(self, event) -> None:
+        sr.save_config(self.cfg)
+        super().hideEvent(event)
+
+
 # ---------------------------------------------------------------- 说明页
 
 class _FoldSection(QWidget):
@@ -5895,6 +6297,8 @@ class SettingsWindow(QWidget):
         self.page_key = HotkeyPage(cfg, bank, scfg)
         self.page_wheel = WheelPage(cfg, scfg)
         self.page_mic = MicPage(cfg, engine)
+        self.page_speech = SpeechPage(cfg, engine)
+        self.page_speech.saved.connect(self._on_speech_saved)
         self.page_help = HelpPage()
         self.page_help.guide_requested.connect(self.guide_requested.emit)
         self.page_help.update_requested.connect(self.update_requested.emit)
@@ -5903,6 +6307,8 @@ class SettingsWindow(QWidget):
         self.tabs.addTab(self.page_wheel, "轮盘")
         self.tabs.addTab(self.page_mic, "语音输出")
         self.tabs.addTab(self.page_help, "说明")
+        # AI 朗读追加在最后（页号 5），已有页号和「启动页」设置都不变；导航按钮放在音效工作台后面
+        self.tabs.addTab(self.page_speech, "AI 朗读")
         self.navigation = QButtonGroup(self)
         self.navigation.setExclusive(True)
         for index, (text, symbol) in enumerate((
@@ -5911,6 +6317,7 @@ class SettingsWindow(QWidget):
             ("轮盘设置", "wheel"),
             ("语音输出", "voice"),
             ("使用说明", "help"),
+            ("AI 朗读", "speech"),
         )):
             button = QPushButton(text)
             button.setObjectName("NavItem")
@@ -5924,7 +6331,10 @@ class SettingsWindow(QWidget):
                 lambda pos, page=index, item=button: self._page_menu(page, item.mapToGlobal(pos))
             )
             self.navigation.addButton(button, index)
-            bar_layout.addWidget(button)
+            if symbol == "speech":
+                bar_layout.insertWidget(bar_layout.indexOf(self.navigation.button(0)) + 1, button)
+            else:
+                bar_layout.addWidget(button)
         self.navigation.idClicked.connect(self.tabs.setCurrentIndex)
         bar_layout.addStretch(1)
         version = QLabel(sr.APP_VERSION)
@@ -6055,6 +6465,7 @@ class SettingsWindow(QWidget):
             ("定位轮盘库", self.page_wheel.wheel_list.setFocus),
             ("重新检测音频设备", self.page_mic.btn_refresh.click),
             ("查看常见问题", self.page_help.focus_faq),
+            ("停止朗读", self.page_speech.stop),
         )[index]
         related = menu.addAction(title)
         chosen = menu.exec(position)
@@ -6440,6 +6851,11 @@ class SettingsWindow(QWidget):
             self.preview.selected = self.scfg.order.index(self.scfg.canon(name))
             self.preview.update()
             self.detail.set_sound(self.bank.full_at(self.preview.selected))
+
+    def _on_speech_saved(self, _path: str) -> None:
+        """朗读存成音效后，音效库马上能看到。"""
+        self.bank.reload()
+        self.page_lib.refresh()
 
     def _on_slot_dropped(self, src: int, dst: int) -> None:
         """轮盘内部拖动：两个槽位互换（外圈可以换成空格子）。"""
